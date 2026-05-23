@@ -8,6 +8,7 @@ import { buildSystemPrompt } from "~utils/tools";
 import {
   createAgentForTab,
   streamAgentResponse,
+  toLangChainMessages,
 } from "~utils/agent";
 import { debugLog, errorLog, infoLog } from "~utils/logger";
 import MessageBubble from "~components/MessageBubble";
@@ -295,7 +296,8 @@ function SidePanel() {
 
       try {
         infoLog('SidePanel', 'Starting agent stream...');
-        const stream = streamAgentResponse(agent, currentInput, controller.signal);
+        const history = toLangChainMessages(messages);
+        const stream = streamAgentResponse(agent, currentInput, controller.signal, history);
 
         for await (const chunk of stream) {
           if (controller.signal.aborted) {

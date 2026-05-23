@@ -594,11 +594,12 @@ export async function executeToolCall(
 export async function* streamAgentResponse(
   agent: AgentConfig,
   input: string,
-  signal: AbortSignal
+  signal: AbortSignal,
+  history: BaseMessage[] = []
 ): AsyncGenerator<AgentStreamChunk> {
   infoLog("streamAgentResponse", "Starting agent stream");
 
-  const conversationHistory: BaseMessage[] = [];
+  const conversationHistory: BaseMessage[] = [...history];
 
   while (!signal.aborted) {
     try {
