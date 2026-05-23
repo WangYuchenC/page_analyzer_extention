@@ -609,6 +609,27 @@ export async function* streamAgentResponse(
         new HumanMessage(input),
       ];
 
+      infoLog("streamAgentResponse", "=== Sending to LLM ===");
+      infoLog("streamAgentResponse", `Total messages: ${messages.length}`);
+      infoLog("streamAgentResponse", `System prompt length: ${agent.systemPrompt.length} chars`);
+      infoLog("streamAgentResponse", `History messages: ${conversationHistory.length}`);
+      infoLog("streamAgentResponse", `Current input: "${input.slice(0, 100)}${input.length > 100 ? "..." : ""}"`);
+      
+      messages.forEach((msg, index) => {
+        const type = msg._getType();
+        const contentPreview = typeof msg.content === "string" 
+          ? msg.content.slice(0, 150) + (msg.content.length > 150 ? "..." : "")
+          : JSON.stringify(msg.content).slice(0, 150) + "...";
+        infoLog("streamAgentResponse", `Message ${index} [${type}]: ${contentPreview}`);
+      });
+      
+      const totalChars = messages.reduce((acc, msg) => {
+        if (typeof msg.content === "string") return acc + msg.content.length;
+        return acc + JSON.stringify(msg.content).length;
+      }, 0);
+      infoLog("streamAgentResponse", `Total content length: ${totalChars} chars (~${Math.floor(totalChars / 4)} tokens)`);
+      infoLog("streamAgentResponse", "=== End LLM input ===");
+
       const response = await agent.model.invoke(messages, { signal });
       conversationHistory.push(new HumanMessage(input));
       conversationHistory.push(response);
