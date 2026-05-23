@@ -46,11 +46,14 @@ src/
 ├── sidepanel.tsx       # 侧边栏 UI (流式聊天 + 网络请求)
 ├── style.css           # 全局样式 + Tailwind
 ├── types/index.ts      # TypeScript 类型定义 (含 ToolCall, PageSummary, StreamChunk)
-├── store/app-store.ts  # Zustand 状态管理 (含 streaming 方法)
+├── store/app-store.ts  # Zustand 状态管理 (API Key 加密持久化, streaming 方法)
+├── components/         # UI 组件 (MessageBubble, ChatInput, NetworkTab, Toolbar)
 └── utils/
-    ├── messaging.ts    # 消息传递工具
-    ├── streaming.ts    # SSE 流式解析器
-    └── tools.ts        # 工具定义 + 工具调用循环
+    ├── agent.ts        # LangChain Agent 集成 (模型创建, 工具调用, 流式跟进)
+    ├── messaging.ts    # 消息传递工具 (含 content script 注入 fallback)
+    ├── crypto.ts       # Web Crypto API AES-GCM 加密 (API Key 存储加密)
+    ├── streaming.ts    # SSE 流式解析器 (legacy)
+    └── tools.ts        # 系统提示构建
 ```
 
 技术栈: Plasmo + React + TypeScript + TailwindCSS + Zustand
@@ -62,5 +65,5 @@ src/
 - LLM 可主动调用 4 种工具：CSS 选择器查询、全文搜索、页面元信息、已选元素详情
 - 兼容 DeepSeek 等深度推理模型，自动处理 `reasoning_content` 字段
 - 消息传递基于 `chrome.runtime` API，类型安全的枚举派发
-- 持久化存储仅 API Key / Base URL / Model 三项，其余状态为内存态
+- 持久化存储仅 API Key (AES-GCM 加密) / Base URL / Model / Temperature 四项，其余状态为内存态
 - 结构化页面摘要替代原始 HTML 截断，节省 LLM 上下文空间

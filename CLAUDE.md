@@ -43,17 +43,20 @@ All message types are defined in `src/types/index.ts` as the `MessageType` enum.
 ## Source Modules
 
 - `src/types/index.ts` — `ElementInfo`, `NetworkRequest`, `NetworkResponse`, `ChatMessage`, `ToolCall`, `PageSummary`, `StreamChunk`, `MessageType` enum
-- `src/store/app-store.ts` — Zustand store with `persist` middleware (persists `apiKey`, `baseUrl`, `model` to `chrome.storage` under key `page-analyzer-storage`); store methods include `updateMessage`, `appendToMessage`, `setMessageStreaming` for streaming support
-- `src/utils/messaging.ts` — `sendMessage()`, `sendMessageToTab()`, `addMessageListener()` — typed wrappers around `chrome.runtime` APIs
-- `src/utils/streaming.ts` — `streamChatCompletion()` — SSE stream parser using `response.body.getReader()` + `TextDecoder`; yields `StreamChunk` objects
-- `src/utils/tools.ts` — `TOOL_DEFINITIONS` (4 tool schemas), `accumulateToolCallDeltas()`, `getToolCallArgs()`, `buildSystemPrompt()` — tool calling infrastructure
+- `src/store/app-store.ts` — Zustand store with `persist` middleware (persists `apiKey`, `baseUrl`, `model`, `temperature` to `chrome.storage` under key `page-analyzer-storage`, with `apiKey` encrypted via Web Crypto API before write); store methods include `updateMessage`, `appendToMessage`, `setMessageStreaming` for streaming support
+- `src/utils/messaging.ts` — `sendMessage()`, `sendMessageToTab()`, `sendToContentScript()` (with content script injection fallback), `addMessageListener()` — typed wrappers around `chrome.runtime` APIs
+- `src/utils/agent.ts` — LangChain integration: `createChatModel()`, `createChromeTools()` (DynamicTool wrappers), `toLangChainMessages()`, `executeToolCalls()`, `streamFollowUp()` (bypasses LangChain serializer to preserve `reasoning_content` for DeepSeek compatibility)
+- `src/utils/tools.ts` — `buildSystemPrompt()` — constructs the system prompt with page context and tool descriptions
+- `src/utils/crypto.ts` — Web Crypto API AES-GCM + PBKDF2 for `encrypt()` / `decrypt()` of the API key at rest
+- `src/utils/streaming.ts` — `streamChatCompletion()` — SSE stream parser using `response.body.getReader()` + `TextDecoder`; yields `StreamChunk` objects (legacy — kept for reference, LangChain handles streaming internally)
+- `src/components/` — UI components refactored from the sidepanel: `MessageBubble`, `ChatInput`, `NetworkTab`, `Toolbar`
 
 ## Key Patterns
 
 - **Import alias**: `~` maps to `./src/` (e.g., `import { MessageType } from '~types'` resolves to `src/types/index.ts`)
-- **State management**: Zustand single store. `apiKey`, `baseUrl`, and `model` persist to `chrome.storage`; all other state (messages, page summary, network data) is in-memory only
+- **State management**: Zustand single store. `apiKey` (encrypted), `baseUrl`, `model`, and `temperature` persist to `chrome.storage` via a custom async storage adapter; all other state (messages, page summary, network data) is in-memory only
 - **LLM integration**: Uses native `fetch()` with SSE streaming to call OpenAI-compatible REST API (`/chat/completions`). No SDK dependency. Supports custom base URL and model name. Supports tool/function calling and multi-turn conversation history. Compatible with DeepSeek reasoning models — captures `reasoning_content` from streaming deltas and passes it back on follow-up tool call requests.
-- **Tool calling loop**: sidepanel.tsx accumulates `tool_call` deltas during streaming, executes tools via content script messaging, then makes a follow-up streaming call with tool results — all within a single user message flow
+- **Tool calling loop**: sidepanel.tsx invokes the LangChain model with bound tools, executes tool calls via content script messaging (`query_selector`, `search_page`, `get_page_info`, `get_selected_element`), then makes a follow-up streaming call with tool results — all within a single user message flow
 - **Page context**: Structured `PageSummary` (URL, title, headings, text preview, link/image counts) auto-fetched on mount, replaces raw HTML truncation in LLM context
 - **Streaming UI**: Real-time token display with blinking cursor, status bar, stop button (AbortController), error retry button, tool call visualization panel
 - **Debugger**: `DebuggerManager` class wraps `chrome.debugger` API, listens for `Network.requestWillBeSent` and `Network.responseReceived` events, fetches response bodies via `Network.getResponseBody`
