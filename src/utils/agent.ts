@@ -9,7 +9,7 @@ import {
 import { DynamicTool } from "@langchain/core/tools";
 import { debugLog, errorLog, infoLog, warnLog } from "./logger";
 import { MessageType } from "../types";
-import { sendToContentScript } from "./messaging";
+import { sendToContentScript, sendMessage } from "./messaging";
 import type { ChatMessage } from "../types";
 
 export function createChromeTools(tabId: number) {
@@ -63,7 +63,7 @@ export function createChromeTools(tabId: number) {
       debugLog("Tool:get_page_info", "Executing");
       try {
         const result = await sendToContentScript(tabId, {
-          type: MessageType.GET_PAGE_INFO,
+          type: MessageType.GET_PAGE_SUMMARY,
           payload: {},
         });
         return JSON.stringify(result, null, 2);
@@ -318,10 +318,7 @@ export function createChromeTools(tabId: number) {
     func: async () => {
       debugLog("Tool:capture_screenshot", "Executing");
       try {
-        const result = await sendMessage({
-          type: MessageType.CAPTURE_SCREENSHOT,
-          payload: {},
-        });
+        const result = await sendMessage(MessageType.CAPTURE_SCREENSHOT, {});
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:capture_screenshot", "Error:", error);
@@ -337,10 +334,7 @@ export function createChromeTools(tabId: number) {
     func: async () => {
       debugLog("Tool:get_page_html", "Executing");
       try {
-        const result = await sendMessage({
-          type: MessageType.GET_PAGE_HTML,
-          payload: {},
-        });
+        const result = await sendMessage(MessageType.GET_PAGE_HTML, {});
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:get_page_html", "Error:", error);
@@ -357,10 +351,7 @@ export function createChromeTools(tabId: number) {
       debugLog("Tool:get_network_requests", "Executing");
       try {
         const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
-        const result = await sendMessage({
-          type: MessageType.DEBUGGER_ATTACH,
-          payload: { ...args, getRequests: true },
-        });
+        const result = await sendMessage(MessageType.DEBUGGER_ATTACH, { ...args, getRequests: true });
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:get_network_requests", "Error:", error);
@@ -402,8 +393,12 @@ export function createChatModel(apiKey: string, baseUrl: string, model: string, 
   });
 }
 
+import type { Runnable } from "@langchain/core/runnables";
+import type { BaseLanguageModelInput } from "@langchain/core/language_models/base";
+import type { AIMessageChunk } from "@langchain/core/messages";
+
 export interface AgentConfig {
-  model: ChatOpenAI;
+  model: Runnable<BaseLanguageModelInput, AIMessageChunk>;
   tools: ReturnType<typeof createChromeTools>;
   systemPrompt: string;
   tabId: number;
@@ -448,7 +443,7 @@ export function toLangChainMessages(messages: ChatMessage[]): BaseMessage[] {
               id: tc.id,
               type: "tool_call" as const,
               name: tc.function.name,
-              args: tc.function.arguments,
+              args: typeof tc.function.arguments === "string" ? JSON.parse(tc.function.arguments) : tc.function.arguments,
             })),
           });
         }
@@ -483,7 +478,7 @@ export async function executeToolCall(
   }
   try {
     const result = await tool.func(JSON.stringify(args));
-    return result;
+    return typeof result === "string" ? result : JSON.stringify(result);
   } catch (error) {
     return JSON.stringify({ error: (error as Error).message });
   }

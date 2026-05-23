@@ -1,8 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Globe, ChevronDown, Settings } from "lucide-react";
 import { MessageType } from "~types";
-import type { ElementInfo, ChatMessage, PageSummary, ToolCallInfo } from "~types";
-import { sendMessage, addMessageListener, sendToContentScript } from "~utils/messaging";
+import type { ElementInfo, ChatMessage, PageSummary, ToolCallInfo, NetworkRequest, NetworkResponse } from "~types";
+import { addMessageListener, sendToContentScript } from "~utils/messaging";
 import { useAppStore } from "~store/app-store";
 import { buildSystemPrompt } from "~utils/tools";
 import {
@@ -59,8 +59,6 @@ function SidePanel() {
     clearMessages,
     selectedElement,
     setSelectedElement,
-    screenshot,
-    setScreenshot,
     pageSummary,
     setPageSummary,
     networkRequests,

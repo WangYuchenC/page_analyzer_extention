@@ -324,7 +324,8 @@ async function handleGoForward(tabId: number, sendResponse: (response: unknown) 
 
 async function handleGetCookies(tabId: number, url: string | undefined, sendResponse: (response: unknown) => void) {
   try {
-    const [tab] = await chrome.tabs.query({ id: tabId });
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs[0];
     const targetUrl = url || tab?.url;
     
     if (!targetUrl) {
@@ -357,7 +358,8 @@ async function handleSetCookie(tabId: number, payload: unknown, sendResponse: (r
       return;
     }
 
-    const [tab] = await chrome.tabs.query({ id: tabId });
+    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
+    const tab = tabs[0];
     const targetUrl = url || tab?.url;
     
     if (!targetUrl) {

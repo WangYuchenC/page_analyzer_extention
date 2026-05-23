@@ -252,7 +252,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             return;
           }
           
-          element.click();
+          (element as HTMLElement).click();
           debugLog('ContentScript', 'Clicked element:', selector);
           
           await new Promise(resolve => setTimeout(resolve, waitAfter));
@@ -463,7 +463,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             tagName: el.tagName.toLowerCase(),
             text: (el as HTMLElement).innerText?.slice(0, 2000) || el.textContent?.slice(0, 2000) || '',
             html: includeHtml ? el.innerHTML.slice(0, 3000) : undefined,
-            attributes: Object.fromEntries(Array.from(el.attributes).map((a) => [a.name, a.value])),
+            attributes: Object.fromEntries(Array.from(el.attributes).map((a: Attr) => [a.name, a.value])),
           })),
         });
       } catch (e) {
@@ -484,7 +484,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const regex = new RegExp(escaped, 'gi');
         const matches: Array<{ context: string; element: string }> = [];
-        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null);
         let node: Text | null;
         while ((node = walker.nextNode() as Text | null) && matches.length < searchMax) {
           const text = node.textContent || '';

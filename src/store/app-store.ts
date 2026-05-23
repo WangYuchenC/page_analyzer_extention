@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { persist, type StateStorage } from 'zustand/middleware';
+import { persist, type PersistStorage, type StorageValue } from 'zustand/middleware';
 import type { ChatMessage, ElementInfo, NetworkRequest, NetworkResponse, PageSummary } from '~types';
 import { encrypt, decrypt } from '~utils/crypto';
 
@@ -40,8 +40,15 @@ interface AppState {
   setTemperature: (temp: number) => void;
 }
 
-const encryptedStorage: StateStorage = {
-  getItem: async (name: string) => {
+interface PersistedState {
+  apiKey: string;
+  baseUrl: string;
+  model: string;
+  temperature: number;
+}
+
+const encryptedStorage: PersistStorage<AppState> = {
+  getItem: async (name: string): Promise<StorageValue<AppState> | null> => {
     const result = await chrome.storage.local.get(name);
     const value = result[name];
     if (!value) return null;
@@ -52,21 +59,14 @@ const encryptedStorage: StateStorage = {
     } catch {
       // decryption failed — may be legacy plaintext
     }
-    return JSON.stringify(value);
+    return value as StorageValue<AppState>;
   },
-  setItem: async (name: string, value: unknown) => {
-    let parsed: unknown;
-    if (typeof value === 'string') {
-      parsed = JSON.parse(value);
-    } else if (typeof value === 'object' && value !== null) {
-      parsed = value;
-    } else {
-      parsed = JSON.parse(JSON.stringify(value));
+  setItem: async (name: string, value: StorageValue<AppState>) => {
+    const storedValue = value as { state: PersistedState };
+    if (storedValue.state?.apiKey) {
+      storedValue.state.apiKey = await encrypt(storedValue.state.apiKey);
     }
-    if (typeof parsed === 'object' && parsed !== null && 'state' in parsed && typeof parsed.state === 'object' && parsed.state !== null && 'apiKey' in parsed.state && typeof parsed.state.apiKey === 'string') {
-      parsed.state.apiKey = await encrypt(parsed.state.apiKey);
-    }
-    await chrome.storage.local.set({ [name]: parsed });
+    await chrome.storage.local.set({ [name]: storedValue });
   },
   removeItem: async (name: string) => {
     await chrome.storage.local.remove(name);

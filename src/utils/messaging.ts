@@ -57,7 +57,7 @@ export async function sendToContentScript<T = unknown>(
     const response = await chrome.tabs.sendMessage(tabId, message);
     debugLog('Messaging', 'sendToContentScript response:', tabId, message.type, response);
     return response;
-  } catch (error) {
+  } catch (_error) {
     debugLog('Messaging', 'Content script not ready, injecting...', tabId);
     const jsFiles = chrome.runtime.getManifest().content_scripts?.[0]?.js;
     if (jsFiles) {
