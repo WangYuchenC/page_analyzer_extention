@@ -80,6 +80,15 @@ export interface ChatMessage {
   };
 }
 
+export interface ChatSession {
+  id: string;
+  title: string;
+  messages: ChatMessage[];
+  createdAt: number;
+  updatedAt: number;
+  pageUrl?: string;
+}
+
 export interface PageSummary {
   url: string;
   title: string;

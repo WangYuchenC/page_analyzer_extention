@@ -1,9 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Globe, ChevronDown, Settings } from "lucide-react";
+import { Loader2, Globe, ChevronDown, Settings, Plus, MessageSquare, Trash2, X } from "lucide-react";
 import { MessageType } from "~types";
-import type { ElementInfo, ChatMessage, PageSummary, ToolCallInfo, NetworkRequest, NetworkResponse } from "~types";
+import type { ElementInfo, ChatMessage, PageSummary, ToolCallInfo, NetworkRequest, NetworkResponse, ChatSession } from "~types";
 import { addMessageListener, sendToContentScript } from "~utils/messaging";
-import { useAppStore } from "~store/app-store";
+import { useAppStore, useCurrentSessionMessages } from "~store/app-store";
 import { buildSystemPrompt } from "~utils/tools";
 import {
   createAgentForTab,
@@ -13,7 +13,6 @@ import { debugLog, errorLog, infoLog } from "~utils/logger";
 import MessageBubble from "~components/MessageBubble";
 import ChatInput from "~components/ChatInput";
 import NetworkTab from "~components/NetworkTab";
-import Toolbar from "~components/Toolbar";
 import "../style.css";
 
 let msgIdCounter = 0;
@@ -39,6 +38,19 @@ function formatPageSummary(summary: PageSummary): string {
   ].join("\n");
 }
 
+function formatTime(timestamp: number): string {
+  const date = new Date(timestamp);
+  const now = new Date();
+  const diff = now.getTime() - timestamp;
+  
+  if (diff < 60000) return "刚刚";
+  if (diff < 3600000) return `${Math.floor(diff / 60000)} 分钟前`;
+  if (diff < 86400000) return `${Math.floor(diff / 3600000)} 小时前`;
+  if (diff < 604800000) return `${Math.floor(diff / 86400000)} 天前`;
+  
+  return date.toLocaleDateString("zh-CN", { month: "short", day: "numeric" });
+}
+
 function SidePanel() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
@@ -47,11 +59,16 @@ function SidePanel() {
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
   const [summaryFetched, setSummaryFetched] = useState(false);
+  const [showSessions, setShowSessions] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const {
-    messages,
+    sessions,
+    currentSessionId,
+    createSession,
+    switchSession,
+    deleteSession,
     addMessage,
     updateMessage,
     appendToMessage,
@@ -76,6 +93,8 @@ function SidePanel() {
     temperature,
     setTemperature,
   } = useAppStore();
+
+  const messages = useCurrentSessionMessages();
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -120,9 +139,16 @@ function SidePanel() {
     };
   }, [addMessage, setSelectedElement, addNetworkRequest, addNetworkResponse]);
 
-  // Fetch page summary on mount
   useEffect(() => {
-    if (!summaryFetched) {
+    if (!currentSessionId && sessions.length === 0) {
+      createSession("新会话");
+    } else if (!currentSessionId && sessions.length > 0) {
+      switchSession(sessions[0].id);
+    }
+  }, [currentSessionId, sessions.length, createSession, switchSession]);
+
+  useEffect(() => {
+    if (!summaryFetched && currentSessionId) {
       (async () => {
         try {
           const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -140,7 +166,7 @@ function SidePanel() {
         }
       })();
     }
-  }, [summaryFetched, setPageSummary]);
+  }, [summaryFetched, currentSessionId, setPageSummary]);
 
   const handleStartPicking = async () => {
     try {
@@ -160,11 +186,23 @@ function SidePanel() {
 
   const handleNewSession = async () => {
     debugLog('SidePanel', 'Starting new session');
-    clearMessages();
+    createSession("新会话");
     setSelectedElement(null);
     setScreenshot(null);
     setSummaryFetched(false);
     setInput("");
+  };
+
+  const handleSwitchSession = (sessionId: string) => {
+    switchSession(sessionId);
+    setShowSessions(false);
+    setSummaryFetched(false);
+    setInput("");
+  };
+
+  const handleDeleteSession = (sessionId: string, e: React.MouseEvent) => {
+    e.stopPropagation();
+    deleteSession(sessionId);
   };
 
   const handleSendMessage = async () => {
@@ -185,7 +223,6 @@ function SidePanel() {
     setIsLoading(true);
     setStatusText("正在连接 LLM...");
 
-    // Cancel any previous request
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
@@ -202,7 +239,6 @@ function SidePanel() {
     setStreamingMessageId(assistantMsgId);
 
     try {
-      // Fetch page summary if not yet fetched
       if (!summaryFetched) {
         try {
           const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
@@ -226,7 +262,6 @@ function SidePanel() {
 
       debugLog('SidePanel', 'Active tab:', tab.id, tab.url);
 
-      // Build system prompt with page context
       const contextParts: string[] = [];
       if (pageSummary) {
         contextParts.push(formatPageSummary(pageSummary));
@@ -241,7 +276,6 @@ function SidePanel() {
 
       debugLog('SidePanel', 'System prompt length:', systemContent.length);
 
-      // Create LangChain Agent
       infoLog('SidePanel', 'Creating LangChain Agent...');
       const agent = createAgentForTab(
         apiKey,
@@ -256,11 +290,9 @@ function SidePanel() {
 
       setStatusText("正在生成...");
 
-      // Track tool call info for UI
       let currentToolCalls: ToolCallInfo[] = [];
       let hasToolCalls = false;
 
-      // Stream agent response with automatic multi-round tool calling
       try {
         infoLog('SidePanel', 'Starting agent stream...');
         const stream = streamAgentResponse(agent, currentInput, controller.signal);
@@ -272,13 +304,10 @@ function SidePanel() {
           }
 
           if (chunk.type === "tool_call") {
-            // Handle tool calls
             const toolCalls = chunk.data as { name: string; args: Record<string, unknown> }[];
             infoLog('SidePanel', 'Received tool calls:', toolCalls.length);
 
-            // Show tool call info
             if (!hasToolCalls) {
-              // First batch of tool calls
               hasToolCalls = true;
               currentToolCalls = toolCalls.map((tc, index) => ({
                 id: `${generateMsgId()}-${tc.name}-${index}`,
@@ -291,7 +320,6 @@ function SidePanel() {
                 isStreaming: false,
               });
             } else {
-              // Additional tool calls - create new message
               const additionalToolCalls = toolCalls.map((tc, index) => ({
                 id: `${generateMsgId()}-${tc.name}-${index}`,
                 name: tc.name,
@@ -310,9 +338,7 @@ function SidePanel() {
 
             setStatusText("正在分析页面...");
           } else if (chunk.type === "content") {
-            // Handle content
             if (hasToolCalls) {
-              // Create new message for final response after tool calls
               const finalMsgId = generateMsgId();
               addMessage({
                 id: finalMsgId,
@@ -324,7 +350,6 @@ function SidePanel() {
               setStreamingMessageId(finalMsgId);
               hasToolCalls = false;
             } else {
-              // Direct content
               appendToMessage(assistantMsgId, chunk.data as string);
             }
           }
@@ -338,7 +363,6 @@ function SidePanel() {
         }
       }
 
-      // Mark streaming as complete
       if (streamingMessageId) {
         setMessageStreaming(streamingMessageId, false);
       } else {
@@ -382,6 +406,8 @@ function SidePanel() {
     }
   };
 
+  const sortedSessions = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt);
+
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-200 px-4 py-3">
@@ -403,7 +429,7 @@ function SidePanel() {
             >
               网络
             </button>
-            </div>
+          </div>
         </div>
       </header>
 
@@ -501,13 +527,71 @@ function SidePanel() {
         </div>
       )}
 
-      <Toolbar
-        onNewSession={handleNewSession}
-        onOpenSettings={() => {
-          const el = document.getElementById("api-config");
-          if (el) el.classList.toggle("hidden");
-        }}
-      />
+      <div className="flex gap-2 p-3 bg-white border-b border-gray-200">
+        <button
+          onClick={() => setShowSessions(!showSessions)}
+          className="flex items-center justify-center gap-1 px-3 py-2 bg-gray-100 text-gray-700 rounded text-sm font-medium hover:bg-gray-200 transition-colors"
+        >
+          <MessageSquare className="w-4 h-4" />
+          会话
+        </button>
+        <button
+          onClick={handleNewSession}
+          className="flex items-center justify-center gap-1 px-3 py-2 bg-gray-100 text-gray-700 rounded text-sm font-medium hover:bg-gray-200 transition-colors"
+        >
+          <Plus className="w-4 h-4" />
+          新会话
+        </button>
+        <button
+          onClick={() => {
+            const el = document.getElementById("api-config");
+            if (el) el.classList.toggle("hidden");
+          }}
+          className="flex-1 flex items-center justify-center gap-1 px-3 py-2 bg-gray-100 text-gray-700 rounded text-sm font-medium hover:bg-gray-200 transition-colors"
+        >
+          <Settings className="w-4 h-4" />
+          设置
+        </button>
+      </div>
+
+      {showSessions && (
+        <div className="bg-gray-100 border-b border-gray-200 p-2 max-h-48 overflow-y-auto">
+          {sortedSessions.length === 0 ? (
+            <p className="text-center text-gray-500 text-sm py-4">暂无会话</p>
+          ) : (
+            <div className="space-y-1">
+              {sortedSessions.map((session: ChatSession) => (
+                <div
+                  key={session.id}
+                  onClick={() => handleSwitchSession(session.id)}
+                  className={`flex items-center justify-between px-3 py-2 rounded cursor-pointer transition-colors ${
+                    currentSessionId === session.id
+                      ? "bg-primary-100 border border-primary-300"
+                      : "bg-white hover:bg-gray-50 border border-transparent"
+                  }`}
+                >
+                  <div className="flex-1 min-w-0">
+                    <p className="text-sm font-medium text-gray-800 truncate">
+                      {session.title}
+                    </p>
+                    <p className="text-xs text-gray-500">
+                      {session.messages.length} 条消息 · {formatTime(session.updatedAt)}
+                    </p>
+                  </div>
+                  {sessions.length > 1 && (
+                    <button
+                      onClick={(e) => handleDeleteSession(session.id, e)}
+                      className="p-1 text-gray-400 hover:text-red-500 transition-colors"
+                    >
+                      <Trash2 className="w-4 h-4" />
+                    </button>
+                  )}
+                </div>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
 
       {activeTab === "chat" ? (
         <>
