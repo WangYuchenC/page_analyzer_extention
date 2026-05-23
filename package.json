@@ -10,7 +10,10 @@
     "package": "plasmo package"
   },
   "dependencies": {
+    "@langchain/core": "^1.1.48",
+    "@langchain/openai": "^1.4.7",
     "autoprefixer": "10.5.0",
+    "langchain": "^1.4.2",
     "lucide-react": "0.400.0",
     "openai": "4.52.0",
     "plasmo": "0.90.5",

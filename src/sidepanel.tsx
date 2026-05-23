@@ -20,14 +20,13 @@ import type {
   NetworkRequest,
   NetworkResponse,
   PageSummary,
-  ToolCall,
   ToolCallInfo,
-  StreamChunk,
 } from "~types";
 import { sendMessage, addMessageListener } from "~utils/messaging";
 import { useAppStore } from "~store/app-store";
-import { streamChatCompletion } from "~utils/streaming";
-import { TOOL_DEFINITIONS, accumulateToolCallDeltas, getToolCallArgs, buildSystemPrompt } from "~utils/tools";
+import { buildSystemPrompt } from "~utils/tools";
+import { createChromeTools, createChatModel, toLangChainMessages, executeToolCalls } from "~utils/agent";
+import { SystemMessage, HumanMessage } from "@langchain/core/messages";
 import "../style.css";
 
 async function sendToContentScript<T = unknown>(
@@ -48,14 +47,6 @@ async function sendToContentScript<T = unknown>(
     return await chrome.tabs.sendMessage(tabId, message);
   }
 }
-
-const SYSTEM_PROMPT_BASE = `You are a web scraping assistant. Help users analyze web pages and generate scraping code.
-
-## Guidelines
-- You can use tools to investigate the page when you need details beyond the summary
-- Prefer CSS selectors over XPath when generating code
-- Generate Python code using requests/bs4 or Playwright when appropriate
-- If the user hasn't provided enough context, use your tools to find it`;
 
 function SidePanel() {
   const [input, setInput] = useState("");
@@ -265,78 +256,6 @@ function SidePanel() {
     ].join("\n");
   }, []);
 
-  const executeToolCall = async (
-    tabId: number,
-    toolCall: ToolCall
-  ): Promise<{ role: "tool"; tool_call_id: string; content: string; name: string }> => {
-    const toolToType: Record<string, MessageType> = {
-      query_selector: MessageType.QUERY_SELECTOR,
-      search_page: MessageType.SEARCH_PAGE,
-      get_page_info: MessageType.GET_PAGE_INFO,
-      get_selected_element: MessageType.GET_SELECTED_ELEMENT,
-    };
-
-    const messageType = toolToType[toolCall.function.name];
-    if (!messageType) {
-      return {
-        role: "tool",
-        tool_call_id: toolCall.id,
-        content: `Unknown tool: ${toolCall.function.name}`,
-        name: toolCall.function.name,
-      };
-    }
-
-    const args = getToolCallArgs(toolCall.function.arguments);
-    try {
-      const result = await sendToContentScript(tabId, {
-        type: messageType,
-        payload: args,
-      });
-      return {
-        role: "tool",
-        tool_call_id: toolCall.id,
-        content: JSON.stringify(result, null, 2),
-        name: toolCall.function.name,
-      };
-    } catch (error) {
-      return {
-        role: "tool",
-        tool_call_id: toolCall.id,
-        content: `Error: ${(error as Error).message}`,
-        name: toolCall.function.name,
-      };
-    }
-  };
-
-  const buildLLMMessages = useCallback(() => {
-    const contextParts: string[] = [];
-
-    if (pageSummary) {
-      contextParts.push(formatPageSummary(pageSummary));
-    }
-
-    if (selectedElement) {
-      contextParts.push(
-        `## Selected Element\ntagName: ${selectedElement.tagName}\nXPath: ${selectedElement.xpath}\nCSS: ${selectedElement.cssSelector}\nText: ${selectedElement.innerText.slice(0, 200)}`
-      );
-    }
-
-    const pageContext = contextParts.length > 0 ? contextParts.join("\n\n") : "No page context available yet.";
-    const systemContent = buildSystemPrompt(pageContext, true);
-
-    // Build conversation history: include last 20 messages (excluding the current user's new message)
-    const historyMessages = messages.slice(-20).map((m) => {
-      if (m.role === "tool") {
-        return { role: "tool" as const, tool_call_id: m.tool_call_id!, content: m.content, name: m.name };
-      }
-      return { role: m.role as "user" | "assistant", content: m.content };
-    });
-
-    return [
-      { role: "system" as const, content: systemContent },
-      ...historyMessages,
-    ];
-  }, [messages, pageSummary, selectedElement, formatPageSummary]);
 
   const handleSendMessage = async () => {
     if (!input.trim() || !apiKey) return;
@@ -392,156 +311,112 @@ function SidePanel() {
         throw new Error("No active tab");
       }
 
-      const llmMessages = buildLLMMessages();
+      // Build system prompt with page context
+      const contextParts: string[] = [];
+      if (pageSummary) {
+        contextParts.push(formatPageSummary(pageSummary));
+      }
+      if (selectedElement) {
+        contextParts.push(
+          `## Selected Element\ntagName: ${selectedElement.tagName}\nXPath: ${selectedElement.xpath}\nCSS: ${selectedElement.cssSelector}\nText: ${selectedElement.innerText.slice(0, 200)}`
+        );
+      }
+      const pageContext = contextParts.length > 0 ? contextParts.join("\n\n") : "No page context available yet.";
+      const systemContent = buildSystemPrompt(pageContext, true);
 
-      // Add the current user message (with screenshot if available)
-      const userContent: string | object[] = screenshot
-        ? [
-            { type: "text" as const, text: currentInput },
-            { type: "image_url" as const, image_url: { url: screenshot } },
-          ]
-        : currentInput;
-      llmMessages.push({ role: "user" as const, content: userContent as string });
+      // Create LangChain chat model with tools
+      const chatModel = createChatModel(apiKey, baseUrl || "https://api.openai.com/v1", model);
+      const tools = createChromeTools(tab.id);
+      const modelWithTools = chatModel.bindTools(tools);
+
+      // Build messages: system + history + current user input
+      const systemMsg = new SystemMessage(systemContent);
+      const historyMsgs = toLangChainMessages(messages.slice(-20));
+      const userMsg = screenshot
+        ? new HumanMessage({
+            content: [
+              { type: "text", text: currentInput },
+              { type: "image_url", image_url: { url: screenshot } },
+            ],
+          })
+        : new HumanMessage(currentInput);
+      const allMessages = [systemMsg, ...historyMsgs, userMsg];
 
       setStatusText("正在生成...");
 
-      const stream = streamChatCompletion(
-        `${baseUrl || "https://api.openai.com/v1"}/chat/completions`,
-        apiKey,
-        {
-          model,
-          messages: llmMessages,
-          max_tokens: 4096,
-          tools: TOOL_DEFINITIONS,
-          tool_choice: "auto",
-        },
-        controller.signal
-      );
+      // Track tool call info for UI
+      let currentToolCalls: ToolCallInfo[] = [];
 
-      let accumulatedToolCalls: ToolCall[] | null = null;
-      let reasoningContent = '';
-
-      for await (const event of stream) {
-        if (controller.signal.aborted) break;
-
-        const choice = event.choices?.[0];
-        if (!choice) continue;
-
-        // Content delta — append to streaming message
-        if (choice.delta?.content) {
-          appendToMessage(assistantMsgId, choice.delta.content);
-        }
-
-        // Reasoning content (DeepSeek thinking mode)
-        if (choice.delta?.reasoning_content) {
-          reasoningContent += choice.delta.reasoning_content;
-        }
-
-        // Tool call delta — accumulate
-        if (choice.delta?.tool_calls) {
-          accumulatedToolCalls = accumulateToolCallDeltas(accumulatedToolCalls, choice.delta.tool_calls);
-        }
-
-        // Finish
-        if (choice.finish_reason === "stop") {
-          setMessageStreaming(assistantMsgId, false);
-        }
-      }
+      // First invocation: may return content or tool_calls
+      const response = await modelWithTools.invoke(allMessages, {
+        signal: controller.signal,
+        callbacks: [
+          {
+            handleLLMNewToken: (token: string) => {
+              appendToMessage(assistantMsgId, token);
+            },
+          },
+        ],
+      });
 
       // Handle tool calls if any
-      if (accumulatedToolCalls && accumulatedToolCalls.length > 0 && !controller.signal.aborted) {
+      if (response.tool_calls?.length && !controller.signal.aborted) {
         setStatusText("正在分析页面...");
 
-        const toolCallInfos: ToolCallInfo[] = accumulatedToolCalls.map((tc) => ({
-          id: tc.id,
-          name: tc.function.name,
+        // Show tool call info in the current message
+        currentToolCalls = response.tool_calls.map((tc) => ({
+          id: tc.id || `${Date.now()}-${tc.name}`,
+          name: tc.name,
           status: "running" as const,
         }));
-
         updateMessage(assistantMsgId, {
           content: "",
-          metadata: { toolCallInfos },
+          metadata: { toolCallInfos: currentToolCalls },
           isStreaming: false,
         });
 
-        // Execute tool calls in parallel
-        const toolResults = await Promise.all(
-          accumulatedToolCalls.map(async (tc) => {
-            const result = await executeToolCall(tab.id, tc);
-            // Update tool call info status
-            const status: ToolCallInfo["status"] = result.content.startsWith("Error:") ? "error" : "completed";
-            updateMessage(assistantMsgId, {
-              metadata: {
-                toolCallInfos: (accumulatedToolCalls || []).map((t) => ({
-                  id: t.id,
-                  name: t.function.name,
-                  status: t.id === tc.id ? status : "completed",
-                })),
-              },
-            });
-            return result;
-          })
-        );
+        // Execute tools in parallel
+        const toolMessages = await executeToolCalls(response.tool_calls, tab.id);
+
+        // Mark all tools as completed
+        currentToolCalls = currentToolCalls.map((t) => ({
+          ...t,
+          status: "completed" as const,
+        }));
+        updateMessage(assistantMsgId, {
+          metadata: { toolCallInfos: currentToolCalls },
+        });
 
         setStatusText("正在生成...");
 
-        // Add tool results and make second LLM call
-        const toolResponseMsgId = (Date.now() + 2).toString();
-        const toolResponsePlaceholder: ChatMessage = {
-          id: toolResponseMsgId,
+        // Create a new assistant message for the final response
+        const finalMsgId = (Date.now() + 2).toString();
+        addMessage({
+          id: finalMsgId,
           role: "assistant",
           content: "",
           timestamp: Date.now(),
           isStreaming: true,
-        };
-        addMessage(toolResponsePlaceholder);
-        setStreamingMessageId(toolResponseMsgId);
+        });
+        setStreamingMessageId(finalMsgId);
 
-        const assistantMsg: Record<string, unknown> = {
-          role: "assistant" as const,
-          content: null as unknown as string,
-          tool_calls: accumulatedToolCalls.map((tc) => ({
-            id: tc.id,
-            type: "function" as const,
-            function: { name: tc.function.name, arguments: tc.function.arguments },
-          })),
-        };
+        // Second invocation with tool results (no tools binding)
+        const finalMessages = [...allMessages, response, ...toolMessages];
+        await chatModel.invoke(finalMessages, {
+          signal: controller.signal,
+          callbacks: [
+            {
+              handleLLMNewToken: (token: string) => {
+                appendToMessage(finalMsgId, token);
+              },
+            },
+          ],
+        });
 
-        // DeepSeek thinking mode requires reasoning_content to be passed back
-        if (reasoningContent) {
-          assistantMsg.reasoning_content = reasoningContent;
-        }
-
-        const secondMessages = [
-          ...llmMessages,
-          assistantMsg,
-          ...toolResults.map((r) => ({
-            role: "tool" as const,
-            tool_call_id: r.tool_call_id,
-            content: r.content,
-          })),
-        ];
-
-        const secondStream = streamChatCompletion(
-          `${baseUrl || "https://api.openai.com/v1"}/chat/completions`,
-          apiKey,
-          {
-            model,
-            messages: secondMessages,
-            max_tokens: 4096,
-          },
-          controller.signal
-        );
-
-        for await (const event of secondStream) {
-          if (controller.signal.aborted) break;
-          if (event.choices?.[0]?.delta?.content) {
-            appendToMessage(toolResponseMsgId, event.choices[0].delta.content);
-          }
-          if (event.choices?.[0]?.finish_reason === "stop") {
-            setMessageStreaming(toolResponseMsgId, false);
-          }
-        }
+        setMessageStreaming(finalMsgId, false);
+      } else if (!controller.signal.aborted) {
+        // No tool calls — content was streamed directly
+        setMessageStreaming(assistantMsgId, false);
       }
     } catch (error: any) {
       if (error.name === "AbortError" || error.name === "TypeError") {

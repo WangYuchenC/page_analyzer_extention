@@ -128,7 +128,8 @@ ${pageSummary}${toolSection}
 
 ## Guidelines
 - Use tools to investigate the page when you need details beyond the summary
+- When the user asks to extract or retrieve specific information from the page, use your tools to get the data and present it directly in a clear readable format — do NOT just generate code
+- When the user asks for scraping code or a reusable solution, generate Python code using requests/bs4 or Playwright
 - Prefer CSS selectors over XPath when generating code
-- Generate Python code using requests/bs4 or Playwright when appropriate
 - If the user hasn't provided enough context, use your tools to find it`;
 }
