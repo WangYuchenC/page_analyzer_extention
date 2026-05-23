@@ -59,6 +59,8 @@ function SidePanel() {
     clearMessages,
     selectedElement,
     setSelectedElement,
+    screenshot,
+    setScreenshot,
     pageSummary,
     setPageSummary,
     networkRequests,

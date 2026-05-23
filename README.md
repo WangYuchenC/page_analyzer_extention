@@ -10,6 +10,7 @@
 - **页面摘要** — 自动提取页面标题、标题结构、正文预览等信息作为 LLM 上下文
 - **HTML 获取** — 获取页面完整 HTML 源码供 AI 分析
 - **网络请求监控** — 通过 Chrome Debugger API 拦截并展示所有 HTTP 请求/响应详情
+- **配置持久化** — API Key、Base URL、模型、温度等配置自动保存，聊天记录(session)持久化存储
 
 ## Agent 工具列表
 
@@ -82,8 +83,8 @@ src/
 
 - 无 `popup.tsx` — 点击图标直接打开 Chrome 侧边栏
 - 使用原生 `fetch` + SSE 流式调用 LLM API，支持自定义 Base URL 和模型
-- LLM 可主动调用 15 种工具进行页面分析和交互
+- LLM 可主动调用 15 种工具进行页面分析和交互，所有工具均已添加参数验证
 - 兼容 DeepSeek 等深度推理模型，自动处理 `reasoning_content` 字段
-- 消息传递基于 `chrome.runtime` API，类型安全的枚举派发
-- 持久化存储仅 API Key (AES-GCM 加密) / Base URL / Model / Temperature 四项，其余状态为内存态
+- 消息传递基于 `chrome.runtime` API，类型安全的枚举派发，错误信息正确解析
+- 持久化存储包括：API Key (AES-GCM 加密) / Base URL / Model / Temperature / 聊天记录，支持跨会话保留
 - 结构化页面摘要替代原始 HTML 截断，节省 LLM 上下文空间

@@ -12,6 +12,42 @@ import { MessageType } from "../types";
 import { sendToContentScript, sendMessage } from "./messaging";
 import type { ChatMessage } from "../types";
 
+function parseInput(input: string): Record<string, unknown> {
+  if (!input) return {};
+  try {
+    return typeof input === "string" ? JSON.parse(input) : input;
+  } catch {
+    warnLog("parseInput", "Failed to parse input:", input);
+    return {};
+  }
+}
+
+function validateRequired(args: Record<string, unknown>, required: string[]): string | null {
+  const missing = required.filter((key) => args[key] === undefined || args[key] === null);
+  if (missing.length > 0) {
+    return `Missing required parameters: ${missing.join(", ")}`;
+  }
+  return null;
+}
+
+function validateString(args: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    if (args[key] !== undefined && typeof args[key] !== "string") {
+      return `Parameter "${key}" must be a string`;
+    }
+  }
+  return null;
+}
+
+function validateNumber(args: Record<string, unknown>, keys: string[]): string | null {
+  for (const key of keys) {
+    if (args[key] !== undefined && typeof args[key] !== "number") {
+      return `Parameter "${key}" must be a number`;
+    }
+  }
+  return null;
+}
+
 export function createChromeTools(tabId: number) {
   debugLog("createChromeTools", "Creating tools for tab:", tabId);
 
@@ -22,7 +58,12 @@ export function createChromeTools(tabId: number) {
     func: async (input: string) => {
       debugLog("Tool:query_selector", "Executing with input:", input);
       try {
-        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const args = parseInput(input);
+        const validation = validateRequired(args, ["selector"]);
+        if (validation) return JSON.stringify({ error: validation });
+        const strValidation = validateString(args, ["selector"]);
+        if (strValidation) return JSON.stringify({ error: strValidation });
+        
         const result = await sendToContentScript(tabId, {
           type: MessageType.QUERY_SELECTOR,
           payload: args,
@@ -42,7 +83,12 @@ export function createChromeTools(tabId: number) {
     func: async (input: string) => {
       debugLog("Tool:search_page", "Executing with input:", input);
       try {
-        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const args = parseInput(input);
+        const validation = validateRequired(args, ["query"]);
+        if (validation) return JSON.stringify({ error: validation });
+        const strValidation = validateString(args, ["query"]);
+        if (strValidation) return JSON.stringify({ error: strValidation });
+        
         const result = await sendToContentScript(tabId, {
           type: MessageType.SEARCH_PAGE,
           payload: args,
@@ -100,7 +146,12 @@ export function createChromeTools(tabId: number) {
     func: async (input: string) => {
       debugLog("Tool:click_element", "Executing with input:", input);
       try {
-        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const args = parseInput(input);
+        const validation = validateRequired(args, ["selector"]);
+        if (validation) return JSON.stringify({ error: validation });
+        const strValidation = validateString(args, ["selector"]);
+        if (strValidation) return JSON.stringify({ error: strValidation });
+        
         const result = await sendToContentScript(tabId, {
           type: MessageType.CLICK_ELEMENT,
           payload: args,
@@ -120,7 +171,12 @@ export function createChromeTools(tabId: number) {
     func: async (input: string) => {
       debugLog("Tool:input_text", "Executing with input:", input);
       try {
-        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const args = parseInput(input);
+        const validation = validateRequired(args, ["selector", "text"]);
+        if (validation) return JSON.stringify({ error: validation });
+        const strValidation = validateString(args, ["selector", "text"]);
+        if (strValidation) return JSON.stringify({ error: strValidation });
+        
         const result = await sendToContentScript(tabId, {
           type: MessageType.INPUT_TEXT,
           payload: args,
@@ -140,7 +196,17 @@ export function createChromeTools(tabId: number) {
     func: async (input: string) => {
       debugLog("Tool:scroll_page", "Executing with input:", input);
       try {
-        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const args = parseInput(input);
+        const validation = validateRequired(args, ["direction"]);
+        if (validation) return JSON.stringify({ error: validation });
+        const strValidation = validateString(args, ["direction"]);
+        if (strValidation) return JSON.stringify({ error: strValidation });
+        
+        const validDirections = ["top", "bottom", "up", "down"];
+        if (!validDirections.includes(String(args.direction))) {
+          return JSON.stringify({ error: `direction must be one of: ${validDirections.join(", ")}` });
+        }
+        
         const result = await sendToContentScript(tabId, {
           type: MessageType.SCROLL_PAGE,
           payload: args,
@@ -160,7 +226,12 @@ export function createChromeTools(tabId: number) {
     func: async (input: string) => {
       debugLog("Tool:hover_element", "Executing with input:", input);
       try {
-        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const args = parseInput(input);
+        const validation = validateRequired(args, ["selector"]);
+        if (validation) return JSON.stringify({ error: validation });
+        const strValidation = validateString(args, ["selector"]);
+        if (strValidation) return JSON.stringify({ error: strValidation });
+        
         const result = await sendToContentScript(tabId, {
           type: MessageType.HOVER_ELEMENT,
           payload: args,
@@ -180,7 +251,12 @@ export function createChromeTools(tabId: number) {
     func: async (input: string) => {
       debugLog("Tool:wait_for_element", "Executing with input:", input);
       try {
-        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const args = parseInput(input);
+        const validation = validateRequired(args, ["selector"]);
+        if (validation) return JSON.stringify({ error: validation });
+        const strValidation = validateString(args, ["selector"]);
+        if (strValidation) return JSON.stringify({ error: strValidation });
+        
         const result = await sendToContentScript(tabId, {
           type: MessageType.WAIT_FOR_ELEMENT,
           payload: args,
@@ -200,7 +276,12 @@ export function createChromeTools(tabId: number) {
     func: async (input: string) => {
       debugLog("Tool:execute_script", "Executing with input:", input?.slice(0, 50));
       try {
-        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const args = parseInput(input);
+        const validation = validateRequired(args, ["script"]);
+        if (validation) return JSON.stringify({ error: validation });
+        const strValidation = validateString(args, ["script"]);
+        if (strValidation) return JSON.stringify({ error: strValidation });
+        
         const result = await sendToContentScript(tabId, {
           type: MessageType.EXECUTE_SCRIPT,
           payload: args,
@@ -220,7 +301,12 @@ export function createChromeTools(tabId: number) {
     func: async (input: string) => {
       debugLog("Tool:navigate", "Executing with input:", input);
       try {
-        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const args = parseInput(input);
+        const validation = validateRequired(args, ["url"]);
+        if (validation) return JSON.stringify({ error: validation });
+        const strValidation = validateString(args, ["url"]);
+        if (strValidation) return JSON.stringify({ error: strValidation });
+        
         const result = await sendToContentScript(tabId, {
           type: MessageType.NAVIGATE,
           payload: args,
@@ -278,7 +364,10 @@ export function createChromeTools(tabId: number) {
     func: async (input: string) => {
       debugLog("Tool:get_cookies", "Executing");
       try {
-        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const args = parseInput(input);
+        const strValidation = validateString(args, ["url"]);
+        if (strValidation) return JSON.stringify({ error: strValidation });
+        
         const result = await sendToContentScript(tabId, {
           type: MessageType.GET_COOKIES,
           payload: args,
@@ -298,7 +387,12 @@ export function createChromeTools(tabId: number) {
     func: async (input: string) => {
       debugLog("Tool:set_cookie", "Executing with input:", input);
       try {
-        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const args = parseInput(input);
+        const validation = validateRequired(args, ["name", "value"]);
+        if (validation) return JSON.stringify({ error: validation });
+        const strValidation = validateString(args, ["name", "value", "url", "domain", "path"]);
+        if (strValidation) return JSON.stringify({ error: strValidation });
+        
         const result = await sendToContentScript(tabId, {
           type: MessageType.SET_COOKIE,
           payload: args,
@@ -334,7 +428,14 @@ export function createChromeTools(tabId: number) {
     func: async () => {
       debugLog("Tool:get_page_html", "Executing");
       try {
-        const result = await sendMessage(MessageType.GET_PAGE_HTML, {});
+        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+        if (!tab?.id) {
+          return JSON.stringify({ error: "No active tab found" });
+        }
+        const result = await sendToContentScript(tab.id, {
+          type: MessageType.GET_PAGE_HTML,
+          payload: {},
+        });
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:get_page_html", "Error:", error);
@@ -350,7 +451,10 @@ export function createChromeTools(tabId: number) {
     func: async (input: string) => {
       debugLog("Tool:get_network_requests", "Executing");
       try {
-        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const args = parseInput(input);
+        const numValidation = validateNumber(args, ["limit"]);
+        if (numValidation) return JSON.stringify({ error: numValidation });
+        
         const result = await sendMessage(MessageType.DEBUGGER_ATTACH, { ...args, getRequests: true });
         return JSON.stringify(result, null, 2);
       } catch (error) {

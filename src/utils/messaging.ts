@@ -1,6 +1,16 @@
 import { MessageType, type Message } from '~types';
 import { debugLog, errorLog, infoLog } from './logger';
 
+function getErrorMessage(error: unknown): string {
+  if (error instanceof Error) {
+    return error.message;
+  }
+  if (typeof error === 'object' && error !== null && 'message' in error) {
+    return String((error as Record<string, unknown>).message);
+  }
+  return String(error);
+}
+
 export function sendMessage<T = unknown, R = unknown>(
   type: MessageType,
   payload: T
@@ -12,8 +22,9 @@ export function sendMessage<T = unknown, R = unknown>(
       { type, payload },
       (response) => {
         if (chrome.runtime.lastError) {
-          errorLog('Messaging', 'Send message error:', type, chrome.runtime.lastError);
-          reject(chrome.runtime.lastError);
+          const errorMsg = getErrorMessage(chrome.runtime.lastError);
+          errorLog('Messaging', 'Send message error:', type, errorMsg);
+          reject(new Error(errorMsg));
         } else {
           debugLog('Messaging', 'Message response received:', type, response);
           resolve(response);
@@ -36,8 +47,9 @@ export function sendMessageToTab<T = unknown, R = unknown>(
       { type, payload },
       (response) => {
         if (chrome.runtime.lastError) {
-          errorLog('Messaging', 'Send message to tab error:', tabId, type, chrome.runtime.lastError);
-          reject(chrome.runtime.lastError);
+          const errorMsg = getErrorMessage(chrome.runtime.lastError);
+          errorLog('Messaging', 'Send message to tab error:', tabId, type, errorMsg);
+          reject(new Error(errorMsg));
         } else {
           debugLog('Messaging', 'Tab message response received:', tabId, type, response);
           resolve(response);

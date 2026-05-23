@@ -45,6 +45,7 @@ interface PersistedState {
   baseUrl: string;
   model: string;
   temperature: number;
+  messages: ChatMessage[];
 }
 
 const encryptedStorage: PersistStorage<AppState> = {
@@ -53,20 +54,21 @@ const encryptedStorage: PersistStorage<AppState> = {
     const value = result[name];
     if (!value) return null;
     try {
-      if (value.state?.apiKey) {
-        value.state.apiKey = await decrypt(value.state.apiKey);
+      const clonedValue = JSON.parse(JSON.stringify(value)) as StorageValue<AppState>;
+      if (clonedValue.state?.apiKey) {
+        clonedValue.state.apiKey = await decrypt(clonedValue.state.apiKey);
       }
+      return clonedValue;
     } catch {
-      // decryption failed — may be legacy plaintext
+      return value as StorageValue<AppState>;
     }
-    return value as StorageValue<AppState>;
   },
   setItem: async (name: string, value: StorageValue<AppState>) => {
-    const storedValue = value as { state: PersistedState };
-    if (storedValue.state?.apiKey) {
-      storedValue.state.apiKey = await encrypt(storedValue.state.apiKey);
+    const clonedValue = JSON.parse(JSON.stringify(value)) as { state: PersistedState };
+    if (clonedValue.state?.apiKey) {
+      clonedValue.state.apiKey = await encrypt(clonedValue.state.apiKey);
     }
-    await chrome.storage.local.set({ [name]: storedValue });
+    await chrome.storage.local.set({ [name]: clonedValue });
   },
   removeItem: async (name: string) => {
     await chrome.storage.local.remove(name);
@@ -137,6 +139,7 @@ export const useAppStore = create<AppState>()(
         baseUrl: state.baseUrl,
         model: state.model,
         temperature: state.temperature,
+        messages: state.messages,
       }),
     }
   )

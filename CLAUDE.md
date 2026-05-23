@@ -43,9 +43,9 @@ All message types are defined in `src/types/index.ts` as the `MessageType` enum.
 ## Source Modules
 
 - `src/types/index.ts` — `ElementInfo`, `NetworkRequest`, `NetworkResponse`, `ChatMessage`, `ToolCall`, `PageSummary`, `StreamChunk`, `MessageType` enum, plus payload interfaces for all tools
-- `src/store/app-store.ts` — Zustand store with `persist` middleware (persists `apiKey`, `baseUrl`, `model`, `temperature` to `chrome.storage` under key `page-analyzer-storage`, with `apiKey` encrypted via Web Crypto API before write); store methods include `updateMessage`, `appendToMessage`, `setMessageStreaming` for streaming support
-- `src/utils/messaging.ts` — `sendMessage()`, `sendMessageToTab()`, `sendToContentScript()` (with content script injection fallback), `addMessageListener()` — typed wrappers around `chrome.runtime` APIs
-- `src/utils/agent.ts` — LangChain integration: `createChatModel()`, `createChromeTools()` (DynamicTool wrappers with 15 tools), `createAgentForTab()`, `toLangChainMessages()`, `streamAgentResponse()`, `streamFollowUp()` (bypasses LangChain serializer to preserve `reasoning_content` for DeepSeek compatibility)
+- `src/store/app-store.ts` — Zustand store with `persist` middleware (persists `apiKey`, `baseUrl`, `model`, `temperature`, and `messages` to `chrome.storage` under key `page-analyzer-storage`, with `apiKey` encrypted via Web Crypto API before write); store methods include `updateMessage`, `appendToMessage`, `setMessageStreaming` for streaming support
+- `src/utils/messaging.ts` — `sendMessage()`, `sendMessageToTab()`, `sendToContentScript()` (with content script injection fallback), `addMessageListener()` — typed wrappers around `chrome.runtime` APIs with proper error message extraction
+- `src/utils/agent.ts` — LangChain integration: `createChatModel()`, `createChromeTools()` (DynamicTool wrappers with 15 tools including parameter validation), `createAgentForTab()`, `toLangChainMessages()`, `streamAgentResponse()`, `streamFollowUp()` (bypasses LangChain serializer to preserve `reasoning_content` for DeepSeek compatibility)
 - `src/utils/tools.ts` — `buildSystemPrompt()` — constructs the system prompt with page context and tool descriptions
 - `src/utils/crypto.ts` — Web Crypto API AES-GCM + PBKDF2 for `encrypt()` / `decrypt()` of the API key at rest
 - `src/utils/streaming.ts` — `streamChatCompletion()` — SSE stream parser using `response.body.getReader()` + `TextDecoder`; yields `StreamChunk` objects (legacy — kept for reference, LangChain handles streaming internally)
@@ -74,7 +74,7 @@ All message types are defined in `src/types/index.ts` as the `MessageType` enum.
 ## Key Patterns
 
 - **Import alias**: `~` maps to `./src/` (e.g., `import { MessageType } from '~types'` resolves to `src/types/index.ts`)
-- **State management**: Zustand single store. `apiKey` (encrypted), `baseUrl`, `model`, and `temperature` persist to `chrome.storage` via a custom async storage adapter; all other state (messages, page summary, network data) is in-memory only
+- **State management**: Zustand single store. `apiKey` (encrypted), `baseUrl`, `model`, `temperature`, and `messages` persist to `chrome.storage` via a custom async storage adapter; page summary and network data are in-memory only
 - **LLM integration**: Uses LangChain with `ChatOpenAI` model. Supports custom base URL and model name. Supports tool/function calling and multi-turn conversation history. Compatible with DeepSeek reasoning models — captures `reasoning_content` from streaming deltas and passes it back on follow-up tool call requests.
 - **Tool calling loop**: sidepanel.tsx creates an agent with `createAgentForTab()`, which binds 15 tools to the model. The model can automatically call tools, results are executed via content script messaging, and follow-up calls are made with tool results.
 - **Page context**: Structured `PageSummary` (URL, title, headings, text preview, link/image counts) auto-fetched on mount, replaces raw HTML truncation in LLM context
