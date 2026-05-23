@@ -60,6 +60,7 @@ src/
 - 无 `popup.tsx` — 点击图标直接打开 Chrome 侧边栏
 - 使用原生 `fetch` + SSE 流式调用 LLM API，无需 OpenAI SDK，支持自定义 Base URL 和模型
 - LLM 可主动调用 4 种工具：CSS 选择器查询、全文搜索、页面元信息、已选元素详情
+- 兼容 DeepSeek 等深度推理模型，自动处理 `reasoning_content` 字段
 - 消息传递基于 `chrome.runtime` API，类型安全的枚举派发
 - 持久化存储仅 API Key / Base URL / Model 三项，其余状态为内存态
 - 结构化页面摘要替代原始 HTML 截断，节省 LLM 上下文空间

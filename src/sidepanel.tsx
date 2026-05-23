@@ -419,6 +419,7 @@ function SidePanel() {
       );
 
       let accumulatedToolCalls: ToolCall[] | null = null;
+      let reasoningContent = '';
 
       for await (const event of stream) {
         if (controller.signal.aborted) break;
@@ -429,6 +430,11 @@ function SidePanel() {
         // Content delta — append to streaming message
         if (choice.delta?.content) {
           appendToMessage(assistantMsgId, choice.delta.content);
+        }
+
+        // Reasoning content (DeepSeek thinking mode)
+        if (choice.delta?.reasoning_content) {
+          reasoningContent += choice.delta.reasoning_content;
         }
 
         // Tool call delta — accumulate
@@ -491,17 +497,24 @@ function SidePanel() {
         addMessage(toolResponsePlaceholder);
         setStreamingMessageId(toolResponseMsgId);
 
+        const assistantMsg: Record<string, unknown> = {
+          role: "assistant" as const,
+          content: null as unknown as string,
+          tool_calls: accumulatedToolCalls.map((tc) => ({
+            id: tc.id,
+            type: "function" as const,
+            function: { name: tc.function.name, arguments: tc.function.arguments },
+          })),
+        };
+
+        // DeepSeek thinking mode requires reasoning_content to be passed back
+        if (reasoningContent) {
+          assistantMsg.reasoning_content = reasoningContent;
+        }
+
         const secondMessages = [
           ...llmMessages,
-          {
-            role: "assistant" as const,
-            content: null as unknown as string,
-            tool_calls: accumulatedToolCalls.map((tc) => ({
-              id: tc.id,
-              type: "function" as const,
-              function: { name: tc.function.name, arguments: tc.function.arguments },
-            })),
-          },
+          assistantMsg,
           ...toolResults.map((r) => ({
             role: "tool" as const,
             tool_call_id: r.tool_call_id,

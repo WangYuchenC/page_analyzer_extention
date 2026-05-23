@@ -52,7 +52,7 @@ All message types are defined in `src/types/index.ts` as the `MessageType` enum.
 
 - **Import alias**: `~` maps to `./src/` (e.g., `import { MessageType } from '~types'` resolves to `src/types/index.ts`)
 - **State management**: Zustand single store. `apiKey`, `baseUrl`, and `model` persist to `chrome.storage`; all other state (messages, page summary, network data) is in-memory only
-- **LLM integration**: Uses native `fetch()` with SSE streaming to call OpenAI-compatible REST API (`/chat/completions`). No SDK dependency. Supports custom base URL and model name. Supports tool/function calling and multi-turn conversation history.
+- **LLM integration**: Uses native `fetch()` with SSE streaming to call OpenAI-compatible REST API (`/chat/completions`). No SDK dependency. Supports custom base URL and model name. Supports tool/function calling and multi-turn conversation history. Compatible with DeepSeek reasoning models — captures `reasoning_content` from streaming deltas and passes it back on follow-up tool call requests.
 - **Tool calling loop**: sidepanel.tsx accumulates `tool_call` deltas during streaming, executes tools via content script messaging, then makes a follow-up streaming call with tool results — all within a single user message flow
 - **Page context**: Structured `PageSummary` (URL, title, headings, text preview, link/image counts) auto-fetched on mount, replaces raw HTML truncation in LLM context
 - **Streaming UI**: Real-time token display with blinking cursor, status bar, stop button (AbortController), error retry button, tool call visualization panel
