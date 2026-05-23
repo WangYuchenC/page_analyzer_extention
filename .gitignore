@@ -29,5 +29,8 @@ dist/
 # plasmo
 .plasmo
 
+# claude
+.claude/
+
 # typescript
 .tsbuildinfo
