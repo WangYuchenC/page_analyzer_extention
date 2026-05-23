@@ -4,7 +4,7 @@
 
 ## 功能
 
-- **AI 智能对话** — SSE 流式输出，LLM 可主动调用工具分析页面，支持停止/重试
+- **AI 智能对话** — LangChain Agent 流式输出，LLM 可主动调用工具分析页面，支持停止/重试
 - **DOM 元素选择器** — 悬停高亮选取页面元素，自动提取 XPath、CSS Selector、属性等
 - **页面截图** — 截取当前页面可视区域，AI 可"看懂"页面布局
 - **页面摘要** — 自动提取页面标题、标题结构、正文预览等信息作为 LLM 上下文
@@ -32,6 +32,9 @@
 | `go_forward` | 前进到下一页 |
 | `get_cookies` | 获取页面 Cookie |
 | `set_cookie` | 设置 Cookie |
+| `capture_screenshot` | 截取当前页面可视区域 |
+| `get_page_html` | 获取完整页面 HTML 源码 |
+| `get_network_requests` | 获取监听到的网络请求列表 |
 
 ## 开发
 
@@ -65,15 +68,16 @@ pnpm package
 src/
 ├── background.ts       # Service Worker: 消息路由, Debugger 管理, 截图, 导航/Cookie管理
 ├── content.ts          # Content Script: 元素选取器, CSS 查询, 全文搜索, 页面交互工具
-├── sidepanel.tsx       # 侧边栏 UI (流式聊天 + 网络请求)
+├── sidepanel.tsx       # 侧边栏 UI (多会话管理, 流式聊天 + 网络请求)
 ├── style.css           # 全局样式 + Tailwind
 ├── types/index.ts      # TypeScript 类型定义
-├── store/app-store.ts  # Zustand 状态管理 (API Key 加密持久化)
-├── components/         # UI 组件 (MessageBubble, ChatInput, NetworkTab, Toolbar)
+├── store/app-store.ts  # Zustand 状态管理 (API Key 加密持久化, 多会话)
+├── components/         # UI 组件 (MessageBubble, ChatInput, NetworkTab)
 └── utils/
-    ├── agent.ts        # LangChain Agent 集成 (15个工具定义)
-    ├── messaging.ts    # 消息传递工具
+    ├── agent.ts        # LangChain Agent 集成 (18个工具, 工具调用循环, 上下文截断保护)
+    ├── messaging.ts    # 消息传递工具 (含 content script 自动注入)
     ├── crypto.ts       # Web Crypto API AES-GCM 加密
+    ├── logger.ts       # 结构化日志 (debug/info/warn/error)
     ├── streaming.ts    # SSE 流式解析器 (legacy)
     └── tools.ts        # 系统提示构建
 ```
@@ -83,8 +87,9 @@ src/
 ## 技术细节
 
 - 无 `popup.tsx` — 点击图标直接打开 Chrome 侧边栏
-- 使用原生 `fetch` + SSE 流式调用 LLM API，支持自定义 Base URL 和模型
-- LLM 可主动调用 15 种工具进行页面分析和交互，所有工具均已添加参数验证
+- 使用 LangChain `ChatOpenAI` 流式调用 LLM API，支持自定义 Base URL 和模型；follow-up 请求使用原生 `fetch` + SSE（兼容 DeepSeek `reasoning_content`）
+- LLM 可主动调用 18 种工具进行页面分析和交互，所有工具均已添加参数验证；自动处理 LangChain DynamicTool 的 `{input: "..."}` 参数包裹问题
+- 双层上下文保护：`toLangChainMessages` 对存储消息做单条 5k / 总量 40k 截断；`streamAgentResponse` 循环内对工具结果做 5k 截断并跳过空 HumanMessage
 - 兼容 DeepSeek 等深度推理模型，自动处理 `reasoning_content` 字段
 - 消息传递基于 `chrome.runtime` API，类型安全的枚举派发，错误信息正确解析
 - 持久化存储包括：API Key (AES-GCM 加密) / Base URL / Model / Temperature / 聊天记录，支持跨会话保留

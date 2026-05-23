@@ -15,7 +15,25 @@ import type { ChatMessage } from "../types";
 function parseInput(input: string): Record<string, unknown> {
   if (!input) return {};
   try {
-    return typeof input === "string" ? JSON.parse(input) : input;
+    const parsed = typeof input === "string" ? JSON.parse(input) : input;
+    // DynamicTool + bindTools wraps args as {input: '{"key": "val"}'}
+    // Unwrap if the only key is "input" containing a JSON string
+    if (
+      parsed &&
+      typeof parsed === "object" &&
+      !Array.isArray(parsed) &&
+      Object.keys(parsed).length === 1 &&
+      "input" in parsed &&
+      typeof parsed.input === "string"
+    ) {
+      try {
+        return JSON.parse(parsed.input);
+      } catch {
+        // nested value is not JSON, return the wrapper as-is
+        return parsed;
+      }
+    }
+    return parsed;
   } catch {
     warnLog("parseInput", "Failed to parse input:", input);
     return {};
@@ -543,10 +561,6 @@ export function toLangChainMessages(messages: ChatMessage[]): BaseMessage[] {
       debugLog("toLangChainMessages", `Filtering out empty message at index: ${messages.indexOf(msg)}`);
       return false;
     }
-    if (msg.content && msg.content.length > 10000) {
-      debugLog("toLangChainMessages", `Filtering out large message (${msg.content.length} chars)`);
-      return false;
-    }
     return true;
   });
 
@@ -555,9 +569,15 @@ export function toLangChainMessages(messages: ChatMessage[]): BaseMessage[] {
   let totalChars = 0;
   const result: BaseMessage[] = [];
   
+  const MAX_MSG_CHARS = 5000;
+
   for (let i = recentMessages.length - 1; i >= 0; i--) {
     const msg = recentMessages[i];
-    const msgChars = typeof msg.content === "string" ? msg.content.length : 0;
+    const rawContent = typeof msg.content === "string" ? msg.content : "";
+    const truncatedContent = rawContent.length > MAX_MSG_CHARS
+      ? rawContent.slice(0, MAX_MSG_CHARS) + `\n... [truncated ${rawContent.length - MAX_MSG_CHARS} chars]`
+      : rawContent;
+    const msgChars = truncatedContent.length;
     
     if (totalChars + msgChars > MAX_TOTAL_CHARS && result.length > 0) {
       debugLog("toLangChainMessages", "Context limit reached, stopping");
@@ -569,12 +589,12 @@ export function toLangChainMessages(messages: ChatMessage[]): BaseMessage[] {
     let baseMsg: BaseMessage;
     switch (msg.role) {
       case "user":
-        baseMsg = new HumanMessage(msg.content);
+        baseMsg = new HumanMessage(truncatedContent);
         break;
       case "assistant": {
         if (msg.tool_calls?.length) {
           baseMsg = new AIMessage({
-            content: msg.content || "",
+            content: truncatedContent || "",
             tool_calls: msg.tool_calls.map((tc) => ({
               id: tc.id,
               type: "tool_call" as const,
@@ -583,21 +603,21 @@ export function toLangChainMessages(messages: ChatMessage[]): BaseMessage[] {
             })),
           });
         } else {
-          baseMsg = new AIMessage(msg.content);
+          baseMsg = new AIMessage(truncatedContent);
         }
         break;
       }
       case "tool":
         baseMsg = new ToolMessage({
-          content: msg.content,
+          content: truncatedContent,
           tool_call_id: msg.tool_call_id!,
         });
         break;
       case "system":
-        baseMsg = new SystemMessage(msg.content);
+        baseMsg = new SystemMessage(truncatedContent);
         break;
       default:
-        baseMsg = new HumanMessage(msg.content);
+        baseMsg = new HumanMessage(truncatedContent);
     }
     
     result.unshift(baseMsg);
@@ -638,29 +658,32 @@ export async function* streamAgentResponse(
   infoLog("streamAgentResponse", "Starting agent stream");
 
   const conversationHistory: BaseMessage[] = [...history];
+  const MAX_TOOL_RESULT_CHARS = 5000;
 
   while (!signal.aborted) {
     try {
       const messages: BaseMessage[] = [
         new SystemMessage(agent.systemPrompt),
         ...conversationHistory,
-        new HumanMessage(input),
       ];
+      if (input.trim()) {
+        messages.push(new HumanMessage(input));
+      }
 
       infoLog("streamAgentResponse", "=== Sending to LLM ===");
       infoLog("streamAgentResponse", `Total messages: ${messages.length}`);
       infoLog("streamAgentResponse", `System prompt length: ${agent.systemPrompt.length} chars`);
       infoLog("streamAgentResponse", `History messages: ${conversationHistory.length}`);
       infoLog("streamAgentResponse", `Current input: "${input.slice(0, 100)}${input.length > 100 ? "..." : ""}"`);
-      
+
       messages.forEach((msg, index) => {
         const type = msg._getType();
-        const contentPreview = typeof msg.content === "string" 
+        const contentPreview = typeof msg.content === "string"
           ? msg.content.slice(0, 150) + (msg.content.length > 150 ? "..." : "")
           : JSON.stringify(msg.content).slice(0, 150) + "...";
         infoLog("streamAgentResponse", `Message ${index} [${type}]: ${contentPreview}`);
       });
-      
+
       const totalChars = messages.reduce((acc, msg) => {
         if (typeof msg.content === "string") return acc + msg.content.length;
         return acc + JSON.stringify(msg.content).length;
@@ -669,7 +692,9 @@ export async function* streamAgentResponse(
       infoLog("streamAgentResponse", "=== End LLM input ===");
 
       const response = await agent.model.invoke(messages, { signal });
-      conversationHistory.push(new HumanMessage(input));
+      if (input.trim()) {
+        conversationHistory.push(new HumanMessage(input));
+      }
       conversationHistory.push(response);
 
       if (response.tool_calls?.length) {
@@ -685,10 +710,14 @@ export async function* streamAgentResponse(
         const toolMessages: ToolMessage[] = [];
         for (const toolCall of response.tool_calls) {
           const args = typeof toolCall.args === "string" ? JSON.parse(toolCall.args) : (toolCall.args || {});
-          const result = await executeToolCall(toolCall.name, args, agent.tools);
+          const rawResult = await executeToolCall(toolCall.name, args, agent.tools);
+          // Truncate large tool results to prevent context explosion
+          const truncated = rawResult.length > MAX_TOOL_RESULT_CHARS
+            ? rawResult.slice(0, MAX_TOOL_RESULT_CHARS) + `\n... [truncated ${rawResult.length - MAX_TOOL_RESULT_CHARS} chars]`
+            : rawResult;
           toolMessages.push(
             new ToolMessage({
-              content: result,
+              content: truncated,
               tool_call_id: toolCall.id!,
             })
           );
