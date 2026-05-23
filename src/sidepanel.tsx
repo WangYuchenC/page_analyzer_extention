@@ -383,19 +383,25 @@ function SidePanel() {
         setStreamingMessageId(finalMsgId);
 
         // Second invocation with tool results
+        // Include the assistant message with tool_calls in history for proper context
         const followUpStream = streamFollowUp(
           apiKey,
           baseUrl || "https://api.openai.com/v1",
           model,
-          allMessages,
+          [...allMessages, response as AIMessage],
           response as AIMessage,
           toolMessages,
           controller.signal
         );
 
-        for await (const token of followUpStream) {
-          if (controller.signal.aborted) break;
-          appendToMessage(finalMsgId, token);
+        try {
+          for await (const token of followUpStream) {
+            if (controller.signal.aborted) break;
+            appendToMessage(finalMsgId, token);
+          }
+        } catch (streamError: any) {
+          console.error("Stream error:", streamError);
+          appendToMessage(finalMsgId, "\n[流式响应中断: " + (streamError.message || "未知错误") + "]");
         }
 
         setMessageStreaming(finalMsgId, false);

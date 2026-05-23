@@ -57,7 +57,7 @@ export async function* streamFollowUp(
 ): AsyncGenerator<string> {
   const apiMessages: Record<string, unknown>[] = [];
   for (const m of history) apiMessages.push(msgToApi(m));
-  apiMessages.push(msgToApi(assistantMsg));
+  // Note: assistantMsg is already included in history, don't add it again
   for (const m of toolMsgs) apiMessages.push(msgToApi(m));
 
   const normalizedBase = baseUrl.replace(/\/+$/, '');
@@ -101,9 +101,24 @@ export async function* streamFollowUp(
       if (data === '[DONE]') return;
       try {
         const parsed = JSON.parse(data);
-        const content = parsed.choices?.[0]?.delta?.content;
+        // Handle both standard OpenAI format and DeepSeek format
+        const choice = parsed.choices?.[0];
+        if (!choice) continue;
+        const delta = choice.delta;
+        if (!delta) continue;
+        // Handle both content and reasoning_content (for DeepSeek thinking mode)
+        const content = delta.content;
+        const reasoningContent = delta.reasoning_content;
         if (content) yield content;
-      } catch { /* skip */ }
+        if (reasoningContent) yield reasoningContent;
+        // Handle finish_reason to detect early stopping
+        if (choice.finish_reason && choice.finish_reason !== 'stop') {
+          console.warn(`Stream finished with reason: ${choice.finish_reason}`);
+        }
+      } catch (e) {
+        // Log parse errors for debugging
+        console.debug('Failed to parse SSE data:', data, e);
+      }
     }
   }
 }
