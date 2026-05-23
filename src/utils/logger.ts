@@ -44,5 +44,5 @@ export function warnLog(prefix: string, ...args: unknown[]): void {
 }
 
 export function infoLog(prefix: string, ...args: unknown[]): void {
-  console.info(`[PageAnalyzer:${prefix}]`, ...args);
+  console.log(`%c[PageAnalyzer:${prefix}]`, 'color: #2563eb; font-weight: bold;', ...args);
 }
