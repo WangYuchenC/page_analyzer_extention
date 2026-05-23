@@ -535,16 +535,45 @@ export function createAgentForTab(
 export function toLangChainMessages(messages: ChatMessage[]): BaseMessage[] {
   debugLog("toLangChainMessages", "Converting", messages.length, "messages");
 
-  return messages.map((msg, index) => {
-    debugLog("toLangChainMessages", `Message ${index}:`, msg.role, msg.content?.slice(0, 50));
+  const MAX_TOTAL_CHARS = 40000;
+  const MAX_MESSAGES = 50;
+  
+  const validMessages = messages.filter((msg) => {
+    if (!msg.content && !msg.tool_calls?.length) {
+      debugLog("toLangChainMessages", `Filtering out empty message at index: ${messages.indexOf(msg)}`);
+      return false;
+    }
+    if (msg.content && msg.content.length > 10000) {
+      debugLog("toLangChainMessages", `Filtering out large message (${msg.content.length} chars)`);
+      return false;
+    }
+    return true;
+  });
 
+  const recentMessages = validMessages.slice(-MAX_MESSAGES);
+
+  let totalChars = 0;
+  const result: BaseMessage[] = [];
+  
+  for (let i = recentMessages.length - 1; i >= 0; i--) {
+    const msg = recentMessages[i];
+    const msgChars = typeof msg.content === "string" ? msg.content.length : 0;
+    
+    if (totalChars + msgChars > MAX_TOTAL_CHARS && result.length > 0) {
+      debugLog("toLangChainMessages", "Context limit reached, stopping");
+      break;
+    }
+    
+    totalChars += msgChars;
+    
+    let baseMsg: BaseMessage;
     switch (msg.role) {
       case "user":
-        return new HumanMessage(msg.content);
+        baseMsg = new HumanMessage(msg.content);
+        break;
       case "assistant": {
         if (msg.tool_calls?.length) {
-          debugLog("toLangChainMessages", `Message ${index} has ${msg.tool_calls.length} tool_calls`);
-          return new AIMessage({
+          baseMsg = new AIMessage({
             content: msg.content || "",
             tool_calls: msg.tool_calls.map((tc) => ({
               id: tc.id,
@@ -553,20 +582,29 @@ export function toLangChainMessages(messages: ChatMessage[]): BaseMessage[] {
               args: typeof tc.function.arguments === "string" ? JSON.parse(tc.function.arguments) : tc.function.arguments,
             })),
           });
+        } else {
+          baseMsg = new AIMessage(msg.content);
         }
-        return new AIMessage(msg.content);
+        break;
       }
       case "tool":
-        return new ToolMessage({
+        baseMsg = new ToolMessage({
           content: msg.content,
           tool_call_id: msg.tool_call_id!,
         });
+        break;
       case "system":
-        return new SystemMessage(msg.content);
+        baseMsg = new SystemMessage(msg.content);
+        break;
       default:
-        return new HumanMessage(msg.content);
+        baseMsg = new HumanMessage(msg.content);
     }
-  });
+    
+    result.unshift(baseMsg);
+  }
+
+  debugLog("toLangChainMessages", `Result: ${result.length} messages, ${totalChars} chars`);
+  return result;
 }
 
 export interface AgentStreamChunk {
