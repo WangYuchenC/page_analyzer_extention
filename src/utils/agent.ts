@@ -311,6 +311,64 @@ export function createChromeTools(tabId: number) {
     },
   });
 
+  const captureScreenshotTool = new DynamicTool({
+    name: "capture_screenshot",
+    description:
+      "Capture a screenshot of the current page visible area. Input: empty JSON object {}. Returns base64 encoded image data.",
+    func: async () => {
+      debugLog("Tool:capture_screenshot", "Executing");
+      try {
+        const result = await sendMessage({
+          type: MessageType.CAPTURE_SCREENSHOT,
+          payload: {},
+        });
+        return JSON.stringify(result, null, 2);
+      } catch (error) {
+        errorLog("Tool:capture_screenshot", "Error:", error);
+        return JSON.stringify({ error: (error as Error).message });
+      }
+    },
+  });
+
+  const getPageHtmlTool = new DynamicTool({
+    name: "get_page_html",
+    description:
+      "Get the complete HTML source of the current page. Input: empty JSON object {}. Returns html, title, and url.",
+    func: async () => {
+      debugLog("Tool:get_page_html", "Executing");
+      try {
+        const result = await sendMessage({
+          type: MessageType.GET_PAGE_HTML,
+          payload: {},
+        });
+        return JSON.stringify(result, null, 2);
+      } catch (error) {
+        errorLog("Tool:get_page_html", "Error:", error);
+        return JSON.stringify({ error: (error as Error).message });
+      }
+    },
+  });
+
+  const getNetworkRequestsTool = new DynamicTool({
+    name: "get_network_requests",
+    description:
+      "Get a list of recent network requests captured by the debugger. Input: JSON with optional \"limit\" (number, default 20). Returns array of request/response objects.",
+    func: async (input: string) => {
+      debugLog("Tool:get_network_requests", "Executing");
+      try {
+        const args = typeof input === "string" ? (input ? JSON.parse(input) : {}) : input;
+        const result = await sendMessage({
+          type: MessageType.DEBUGGER_ATTACH,
+          payload: { ...args, getRequests: true },
+        });
+        return JSON.stringify(result, null, 2);
+      } catch (error) {
+        errorLog("Tool:get_network_requests", "Error:", error);
+        return JSON.stringify({ error: (error as Error).message });
+      }
+    },
+  });
+
   return [
     querySelectorTool,
     searchPageTool,
@@ -327,6 +385,9 @@ export function createChromeTools(tabId: number) {
     goForwardTool,
     getCookiesTool,
     setCookieTool,
+    captureScreenshotTool,
+    getPageHtmlTool,
+    getNetworkRequestsTool,
   ];
 }
 

@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Globe, Settings, ChevronDown } from "lucide-react";
+import { Loader2, Globe, ChevronDown, Settings } from "lucide-react";
 import { MessageType } from "~types";
 import type { ElementInfo, ChatMessage, PageSummary, ToolCallInfo } from "~types";
 import { sendMessage, addMessageListener, sendToContentScript } from "~utils/messaging";
@@ -9,7 +9,7 @@ import {
   createAgentForTab,
   streamAgentResponse,
 } from "~utils/agent";
-import { debugLog, errorLog, infoLog, enableDebug, disableDebug, isDebugEnabled } from "~utils/logger";
+import { debugLog, errorLog, infoLog } from "~utils/logger";
 import MessageBubble from "~components/MessageBubble";
 import ChatInput from "~components/ChatInput";
 import NetworkTab from "~components/NetworkTab";
@@ -43,7 +43,6 @@ function SidePanel() {
   const [input, setInput] = useState("");
   const [isLoading, setIsLoading] = useState(false);
   const [isPicking, setIsPicking] = useState(false);
-  const [isDebuggerAttached, setIsDebuggerAttached] = useState(false);
   const [activeTab, setActiveTab] = useState<"chat" | "network">("chat");
   const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
   const [statusText, setStatusText] = useState<string | null>(null);
@@ -77,11 +76,6 @@ function SidePanel() {
     temperature,
     setTemperature,
   } = useAppStore();
-
-  // Log debug status on mount
-  useEffect(() => {
-    infoLog('SidePanel', 'Component mounted, debug enabled:', isDebugEnabled());
-  }, []);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -164,86 +158,13 @@ function SidePanel() {
     }
   };
 
-  const handleCaptureScreenshot = async () => {
-    try {
-      setIsLoading(true);
-      setStatusText("正在截图...");
-      debugLog('SidePanel', 'Capturing screenshot');
-      const response = await sendMessage(MessageType.CAPTURE_SCREENSHOT, {});
-      if (response?.screenshot) {
-        debugLog('SidePanel', 'Screenshot captured, size:', response.screenshot.length);
-        setScreenshot(response.screenshot);
-        const message: ChatMessage = {
-          id: generateMsgId(),
-          role: "assistant",
-          content: "已捕获页面截图",
-          timestamp: Date.now(),
-          metadata: { screenshot: response.screenshot },
-        };
-        addMessage(message);
-      }
-    } catch (error) {
-      errorLog('SidePanel', 'Failed to capture screenshot:', error);
-    } finally {
-      setIsLoading(false);
-      setStatusText(null);
-    }
-  };
-
-  const handleGetPageHtml = async () => {
-    try {
-      setIsLoading(true);
-      setStatusText("正在获取页面 HTML...");
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id) return;
-
-      debugLog('SidePanel', 'Getting page HTML');
-      const response = await sendToContentScript<{ html: string; title: string; url: string }>(tab.id, {
-        type: MessageType.GET_PAGE_HTML,
-      });
-
-      if (response?.html) {
-        debugLog('SidePanel', 'Page HTML fetched, length:', response.html.length);
-        const msg: ChatMessage = {
-          id: generateMsgId(),
-          role: "assistant",
-          content: `已获取页面 HTML (${response.html.length} 字符)`,
-          timestamp: Date.now(),
-        };
-        addMessage(msg);
-      }
-    } catch (error) {
-      errorLog('SidePanel', 'Failed to get page HTML:', error);
-    } finally {
-      setIsLoading(false);
-      setStatusText(null);
-    }
-  };
-
-  const handleToggleDebugger = async () => {
-    try {
-      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-      if (!tab?.id) return;
-
-      if (isDebuggerAttached) {
-        debugLog('SidePanel', 'Detaching debugger');
-        await sendMessage(MessageType.DEBUGGER_DETACH, { tabId: tab.id });
-        setIsDebuggerAttached(false);
-      } else {
-        debugLog('SidePanel', 'Attaching debugger');
-        await sendMessage(MessageType.DEBUGGER_ATTACH, { tabId: tab.id });
-        setIsDebuggerAttached(true);
-        const message: ChatMessage = {
-          id: generateMsgId(),
-          role: "assistant",
-          content: "Debugger 已附加到当前页面，开始监听网络请求...",
-          timestamp: Date.now(),
-        };
-        addMessage(message);
-      }
-    } catch (error) {
-      errorLog('SidePanel', 'Failed to toggle debugger:', error);
-    }
+  const handleNewSession = async () => {
+    debugLog('SidePanel', 'Starting new session');
+    clearMessages();
+    setSelectedElement(null);
+    setScreenshot(null);
+    setSummaryFetched(false);
+    setInput("");
   };
 
   const handleSendMessage = async () => {
@@ -461,14 +382,6 @@ function SidePanel() {
     }
   };
 
-  const toggleDebug = () => {
-    if (isDebugEnabled()) {
-      disableDebug();
-    } else {
-      enableDebug();
-    }
-  };
-
   return (
     <div className="flex flex-col h-screen bg-gray-50">
       <header className="bg-white border-b border-gray-200 px-4 py-3">
@@ -490,14 +403,7 @@ function SidePanel() {
             >
               网络
             </button>
-            <button
-              onClick={toggleDebug}
-              className={`px-3 py-1 text-xs rounded ${isDebugEnabled() ? "bg-green-100 text-green-700" : "text-gray-500 hover:bg-gray-100"}`}
-              title="Toggle Debug Mode"
-            >
-              {isDebugEnabled() ? "Debug ON" : "Debug OFF"}
-            </button>
-          </div>
+            </div>
         </div>
       </header>
 
@@ -596,13 +502,11 @@ function SidePanel() {
       )}
 
       <Toolbar
-        isPicking={isPicking}
-        isLoading={isLoading}
-        isDebuggerAttached={isDebuggerAttached}
-        onStartPicking={handleStartPicking}
-        onCaptureScreenshot={handleCaptureScreenshot}
-        onGetPageHtml={handleGetPageHtml}
-        onToggleDebugger={handleToggleDebugger}
+        onNewSession={handleNewSession}
+        onOpenSettings={() => {
+          const el = document.getElementById("api-config");
+          if (el) el.classList.toggle("hidden");
+        }}
       />
 
       {activeTab === "chat" ? (
@@ -624,9 +528,11 @@ function SidePanel() {
             input={input}
             setInput={setInput}
             isLoading={isLoading}
+            isPicking={isPicking}
             apiKey={apiKey}
             onSend={handleSendMessage}
             onStop={handleStop}
+            onStartPicking={handleStartPicking}
           />
         </>
       ) : (
