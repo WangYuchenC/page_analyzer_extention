@@ -25,8 +25,14 @@ import type {
 import { sendMessage, addMessageListener } from "~utils/messaging";
 import { useAppStore } from "~store/app-store";
 import { buildSystemPrompt } from "~utils/tools";
-import { createChromeTools, createChatModel, toLangChainMessages, executeToolCalls } from "~utils/agent";
-import { SystemMessage, HumanMessage } from "@langchain/core/messages";
+import {
+  createChromeTools,
+  createChatModel,
+  toLangChainMessages,
+  executeToolCalls,
+  streamFollowUp,
+} from "~utils/agent";
+import { SystemMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
 import "../style.css";
 
 async function sendToContentScript<T = unknown>(
@@ -400,18 +406,23 @@ function SidePanel() {
         });
         setStreamingMessageId(finalMsgId);
 
-        // Second invocation with tool results (no tools binding)
-        const finalMessages = [...allMessages, response, ...toolMessages];
-        await chatModel.invoke(finalMessages, {
-          signal: controller.signal,
-          callbacks: [
-            {
-              handleLLMNewToken: (token: string) => {
-                appendToMessage(finalMsgId, token);
-              },
-            },
-          ],
-        });
+        // Second invocation with tool results
+        // Use direct fetch to properly handle reasoning_content pass-back
+        // (LangChain's serializer drops additional_kwargs.reasoning_content)
+        const followUpStream = streamFollowUp(
+          apiKey,
+          baseUrl || "https://api.openai.com/v1",
+          model,
+          allMessages,
+          response as AIMessage,
+          toolMessages,
+          controller.signal
+        );
+
+        for await (const token of followUpStream) {
+          if (controller.signal.aborted) break;
+          appendToMessage(finalMsgId, token);
+        }
 
         setMessageStreaming(finalMsgId, false);
       } else if (!controller.signal.aborted) {

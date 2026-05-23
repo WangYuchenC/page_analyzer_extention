@@ -5,6 +5,107 @@ import type { BaseMessage } from '@langchain/core/messages';
 import type { ChatMessage } from '~types';
 import { MessageType } from '~types';
 
+// #region Follow-up streaming (bypasses LangChain message serialization
+// to handle reasoning_content pass-back for DeepSeek thinking mode)
+
+function msgToApi(msg: BaseMessage): Record<string, unknown> {
+  const type = msg._getType();
+  if (type === 'system') return { role: 'system', content: msg.content };
+  if (type === 'human') {
+    if (typeof msg.content !== 'string' && Array.isArray(msg.content)) {
+      return { role: 'user', content: msg.content };
+    }
+    return { role: 'user', content: msg.content };
+  }
+  if (type === 'ai') {
+    const ai = msg as AIMessage;
+    const entry: Record<string, unknown> = { role: 'assistant', content: ai.content || null };
+    if (ai.tool_calls?.length) {
+      entry.tool_calls = ai.tool_calls.map((tc) => ({
+        id: tc.id,
+        type: 'function',
+        function: {
+          name: tc.name,
+          arguments: typeof tc.args === 'string' ? tc.args : JSON.stringify(tc.args),
+        },
+      }));
+    }
+    const rc = ai.additional_kwargs?.reasoning_content;
+    if (rc) entry.reasoning_content = rc;
+    return entry;
+  }
+  if (type === 'tool') {
+    return { role: 'tool', tool_call_id: (msg as ToolMessage).tool_call_id, content: msg.content };
+  }
+  return { role: 'user', content: msg.content };
+}
+
+/**
+ * Streaming follow-up call with proper reasoning_content pass-back.
+ * Bypasses LangChain's message serialization which drops
+ * additional_kwargs.reasoning_content — required by DeepSeek thinking mode.
+ */
+export async function* streamFollowUp(
+  apiKey: string,
+  baseUrl: string,
+  model: string,
+  history: BaseMessage[],
+  assistantMsg: AIMessage,
+  toolMsgs: ToolMessage[],
+  signal: AbortSignal
+): AsyncGenerator<string> {
+  const apiMessages: Record<string, unknown>[] = [];
+  for (const m of history) apiMessages.push(msgToApi(m));
+  apiMessages.push(msgToApi(assistantMsg));
+  for (const m of toolMsgs) apiMessages.push(msgToApi(m));
+
+  const normalizedBase = baseUrl.replace(/\/+$/, '');
+  const endpoint = normalizedBase.endsWith('/chat/completions')
+    ? normalizedBase
+    : normalizedBase + '/chat/completions';
+  const res = await fetch(endpoint, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      Authorization: `Bearer ${apiKey}`,
+    },
+    body: JSON.stringify({ model, messages: apiMessages, stream: true }),
+    signal,
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => '');
+    throw new Error(`API error: ${res.status} ${body}`);
+  }
+
+  const reader = res.body!.getReader();
+  const decoder = new TextDecoder();
+  let buffer = '';
+
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+
+    buffer += decoder.decode(value, { stream: true });
+    const lines = buffer.split('\n');
+    buffer = lines.pop() || '';
+
+    for (const line of lines) {
+      const trimmed = line.trim();
+      if (!trimmed.startsWith('data: ')) continue;
+      const data = trimmed.slice(6);
+      if (data === '[DONE]') return;
+      try {
+        const parsed = JSON.parse(data);
+        const content = parsed.choices?.[0]?.delta?.content;
+        if (content) yield content;
+      } catch { /* skip */ }
+    }
+  }
+}
+
+// #endregion
+
 const TOOL_CONFIGS = [
   {
     name: 'query_selector',
@@ -69,7 +170,7 @@ export function createChromeTools(tabId: number): DynamicTool[] {
 
 export function createChatModel(apiKey: string, baseUrl: string, model: string): ChatOpenAI {
   return new ChatOpenAI({
-    openAIApiKey: apiKey,
+    apiKey: apiKey,
     configuration: { baseURL: baseUrl },
     model,
     temperature: 0,
@@ -130,7 +231,11 @@ export async function executeToolCalls(
         });
       }
       try {
-        const args = tc.args ? JSON.parse(tc.args) : {};
+        // tc.args is Record<string, any> from LangChain ToolCall (parsed object),
+        // but may be a JSON string when reconstructed from stored ChatMessage history
+        const args = tc.args
+          ? (typeof tc.args === 'string' ? JSON.parse(tc.args) : tc.args)
+          : {};
         const result = await sendToTab(tabId, messageType, args);
         return new ToolMessage({
           content: JSON.stringify(result, null, 2),
