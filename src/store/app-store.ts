@@ -54,9 +54,16 @@ const encryptedStorage: StateStorage = {
     }
     return JSON.stringify(value);
   },
-  setItem: async (name: string, value: string) => {
-    const parsed = JSON.parse(value);
-    if (parsed.state?.apiKey) {
+  setItem: async (name: string, value: unknown) => {
+    let parsed: unknown;
+    if (typeof value === 'string') {
+      parsed = JSON.parse(value);
+    } else if (typeof value === 'object' && value !== null) {
+      parsed = value;
+    } else {
+      parsed = JSON.parse(JSON.stringify(value));
+    }
+    if (typeof parsed === 'object' && parsed !== null && 'state' in parsed && typeof parsed.state === 'object' && parsed.state !== null && 'apiKey' in parsed.state && typeof parsed.state.apiKey === 'string') {
       parsed.state.apiKey = await encrypt(parsed.state.apiKey);
     }
     await chrome.storage.local.set({ [name]: parsed });

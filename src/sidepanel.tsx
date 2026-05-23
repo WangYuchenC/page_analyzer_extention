@@ -1,6 +1,3 @@
-// Polyfill for node:async_hooks before importing LangGraph
-import "~polyfills/async_hooks";
-
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Globe, Settings, ChevronDown } from "lucide-react";
 import { MessageType } from "~types";
@@ -9,11 +6,10 @@ import { sendMessage, addMessageListener, sendToContentScript } from "~utils/mes
 import { useAppStore } from "~store/app-store";
 import { buildSystemPrompt } from "~utils/tools";
 import {
-  createAgentGraph,
+  createAgentForTab,
   streamAgentResponse,
-} from "~utils/agent-graph";
+} from "~utils/agent";
 import { debugLog, errorLog, infoLog, enableDebug, disableDebug, isDebugEnabled } from "~utils/logger";
-import { HumanMessage } from "@langchain/core/messages";
 import MessageBubble from "~components/MessageBubble";
 import ChatInput from "~components/ChatInput";
 import NetworkTab from "~components/NetworkTab";
@@ -324,9 +320,9 @@ function SidePanel() {
 
       debugLog('SidePanel', 'System prompt length:', systemContent.length);
 
-      // Create LangGraph Agent
-      infoLog('SidePanel', 'Creating LangGraph Agent...');
-      const agentGraph = createAgentGraph(
+      // Create LangChain Agent
+      infoLog('SidePanel', 'Creating LangChain Agent...');
+      const agent = createAgentForTab(
         apiKey,
         baseUrl || "https://api.openai.com/v1",
         model,
@@ -335,17 +331,7 @@ function SidePanel() {
         systemContent
       );
 
-      debugLog('SidePanel', 'Agent graph created');
-
-      // Build user message
-      const userMsg = screenshot
-        ? new HumanMessage({
-            content: [
-              { type: "text", text: currentInput },
-              { type: "image_url", image_url: { url: screenshot } },
-            ],
-          })
-        : new HumanMessage(currentInput);
+      debugLog('SidePanel', 'Agent created');
 
       setStatusText("正在生成...");
 
@@ -356,7 +342,7 @@ function SidePanel() {
       // Stream agent response with automatic multi-round tool calling
       try {
         infoLog('SidePanel', 'Starting agent stream...');
-        const stream = streamAgentResponse(agentGraph, [userMsg], controller.signal);
+        const stream = streamAgentResponse(agent, currentInput, controller.signal);
 
         for await (const chunk of stream) {
           if (controller.signal.aborted) {
@@ -366,15 +352,15 @@ function SidePanel() {
 
           if (chunk.type === "tool_call") {
             // Handle tool calls
-            const toolCalls = chunk.data;
+            const toolCalls = chunk.data as { name: string; args: Record<string, unknown> }[];
             infoLog('SidePanel', 'Received tool calls:', toolCalls.length);
 
             // Show tool call info
             if (!hasToolCalls) {
               // First batch of tool calls
               hasToolCalls = true;
-              currentToolCalls = toolCalls.map((tc: any) => ({
-                id: tc.id || `${generateMsgId()}-${tc.name}`,
+              currentToolCalls = toolCalls.map((tc, index) => ({
+                id: `${generateMsgId()}-${tc.name}-${index}`,
                 name: tc.name,
                 status: "running" as const,
               }));
@@ -385,8 +371,8 @@ function SidePanel() {
               });
             } else {
               // Additional tool calls - create new message
-              const additionalToolCalls = toolCalls.map((tc: any) => ({
-                id: tc.id || `${generateMsgId()}-${tc.name}`,
+              const additionalToolCalls = toolCalls.map((tc, index) => ({
+                id: `${generateMsgId()}-${tc.name}-${index}`,
                 name: tc.name,
                 status: "running" as const,
               }));
@@ -410,15 +396,15 @@ function SidePanel() {
               addMessage({
                 id: finalMsgId,
                 role: "assistant",
-                content: chunk.data,
+                content: chunk.data as string,
                 timestamp: Date.now(),
                 isStreaming: true,
               });
               setStreamingMessageId(finalMsgId);
-              hasToolCalls = false; // Reset for next potential round
+              hasToolCalls = false;
             } else {
               // Direct content
-              appendToMessage(assistantMsgId, chunk.data);
+              appendToMessage(assistantMsgId, chunk.data as string);
             }
           }
         }

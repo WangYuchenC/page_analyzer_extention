@@ -210,6 +210,41 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ received: true });
       break;
 
+    case MessageType.NAVIGATE:
+      if (payload?.url && sender.tab?.id) {
+        handleNavigate(sender.tab.id, payload.url, sendResponse);
+        return true;
+      }
+      break;
+
+    case MessageType.GO_BACK:
+      if (sender.tab?.id) {
+        handleGoBack(sender.tab.id, sendResponse);
+        return true;
+      }
+      break;
+
+    case MessageType.GO_FORWARD:
+      if (sender.tab?.id) {
+        handleGoForward(sender.tab.id, sendResponse);
+        return true;
+      }
+      break;
+
+    case MessageType.GET_COOKIES:
+      if (sender.tab?.id) {
+        handleGetCookies(sender.tab.id, payload?.url, sendResponse);
+        return true;
+      }
+      break;
+
+    case MessageType.SET_COOKIE:
+      if (sender.tab?.id) {
+        handleSetCookie(sender.tab.id, payload, sendResponse);
+        return true;
+      }
+      break;
+
     default:
       break;
   }
@@ -254,6 +289,98 @@ async function handleGetPageHTML(tabId: number, sendResponse: (response: unknown
     }
   } catch (error) {
     sendResponse({ error: (error as Error).message });
+  }
+}
+
+async function handleNavigate(tabId: number, url: string, sendResponse: (response: unknown) => void) {
+  try {
+    await chrome.tabs.update(tabId, { url });
+    await new Promise(resolve => setTimeout(resolve, 2000));
+    sendResponse({ success: true, message: `Navigated to: ${url}` });
+  } catch (error) {
+    sendResponse({ success: false, error: (error as Error).message });
+  }
+}
+
+async function handleGoBack(tabId: number, sendResponse: (response: unknown) => void) {
+  try {
+    await chrome.tabs.goBack(tabId);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    sendResponse({ success: true, message: 'Went back' });
+  } catch (error) {
+    sendResponse({ success: false, error: (error as Error).message });
+  }
+}
+
+async function handleGoForward(tabId: number, sendResponse: (response: unknown) => void) {
+  try {
+    await chrome.tabs.goForward(tabId);
+    await new Promise(resolve => setTimeout(resolve, 1000));
+    sendResponse({ success: true, message: 'Went forward' });
+  } catch (error) {
+    sendResponse({ success: false, error: (error as Error).message });
+  }
+}
+
+async function handleGetCookies(tabId: number, url: string | undefined, sendResponse: (response: unknown) => void) {
+  try {
+    const [tab] = await chrome.tabs.query({ id: tabId });
+    const targetUrl = url || tab?.url;
+    
+    if (!targetUrl) {
+      sendResponse({ success: false, error: 'No URL available' });
+      return;
+    }
+
+    const cookies = await chrome.cookies.getAll({ url: targetUrl });
+    sendResponse({ success: true, cookies });
+  } catch (error) {
+    sendResponse({ success: false, error: (error as Error).message });
+  }
+}
+
+async function handleSetCookie(tabId: number, payload: unknown, sendResponse: (response: unknown) => void) {
+  try {
+    const { name, value, url, domain, path, expirationDate, secure, httpOnly } = payload as {
+      name: string;
+      value: string;
+      url?: string;
+      domain?: string;
+      path?: string;
+      expirationDate?: number;
+      secure?: boolean;
+      httpOnly?: boolean;
+    };
+
+    if (!name || value === undefined) {
+      sendResponse({ success: false, error: 'Name and value are required' });
+      return;
+    }
+
+    const [tab] = await chrome.tabs.query({ id: tabId });
+    const targetUrl = url || tab?.url;
+    
+    if (!targetUrl) {
+      sendResponse({ success: false, error: 'No URL available' });
+      return;
+    }
+
+    const cookieDetails: chrome.cookies.SetDetails = {
+      url: targetUrl,
+      name,
+      value: String(value),
+    };
+
+    if (domain) cookieDetails.domain = domain;
+    if (path) cookieDetails.path = path;
+    if (expirationDate) cookieDetails.expirationDate = expirationDate;
+    if (secure !== undefined) cookieDetails.secure = secure;
+    if (httpOnly !== undefined) cookieDetails.httpOnly = httpOnly;
+
+    await chrome.cookies.set(cookieDetails);
+    sendResponse({ success: true, message: `Cookie set: ${name}=${value}` });
+  } catch (error) {
+    sendResponse({ success: false, error: (error as Error).message });
   }
 }
 

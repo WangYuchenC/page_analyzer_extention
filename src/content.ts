@@ -234,6 +234,200 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   debugLog('ContentScript', 'Received message:', type, payload);
 
   switch (type) {
+    case MessageType.CLICK_ELEMENT: {
+      const { selector, waitBefore = 0, waitAfter = 500 } = payload || {};
+      debugLog('ContentScript', 'Click element:', selector);
+      (async () => {
+        try {
+          if (!selector || typeof selector !== 'string') {
+            sendResponse({ success: false, error: 'Selector is required' });
+            return;
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, waitBefore));
+          
+          const element = document.querySelector(selector);
+          if (!element) {
+            sendResponse({ success: false, error: `Element not found: ${selector}` });
+            return;
+          }
+          
+          element.click();
+          debugLog('ContentScript', 'Clicked element:', selector);
+          
+          await new Promise(resolve => setTimeout(resolve, waitAfter));
+          
+          sendResponse({ success: true, message: `Clicked element: ${selector}` });
+        } catch (e) {
+          errorLog('ContentScript', 'Click error:', e);
+          sendResponse({ success: false, error: `Click error: ${(e as Error).message}` });
+        }
+      })();
+      return true;
+    }
+
+    case MessageType.INPUT_TEXT: {
+      const { selector, text, submit = false } = payload || {};
+      debugLog('ContentScript', 'Input text:', selector, text?.slice(0, 20));
+      (async () => {
+        try {
+          if (!selector || typeof selector !== 'string') {
+            sendResponse({ success: false, error: 'Selector is required' });
+            return;
+          }
+          if (text === undefined || text === null) {
+            sendResponse({ success: false, error: 'Text is required' });
+            return;
+          }
+          
+          const element = document.querySelector(selector);
+          if (!element) {
+            sendResponse({ success: false, error: `Element not found: ${selector}` });
+            return;
+          }
+          
+          (element as HTMLInputElement).value = String(text);
+          
+          const inputEvent = new Event('input', { bubbles: true });
+          element.dispatchEvent(inputEvent);
+          
+          if (submit) {
+            element.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+          }
+          
+          sendResponse({ success: true, message: `Input text: ${text.length} characters` });
+        } catch (e) {
+          errorLog('ContentScript', 'Input error:', e);
+          sendResponse({ success: false, error: `Input error: ${(e as Error).message}` });
+        }
+      })();
+      return true;
+    }
+
+    case MessageType.SCROLL_PAGE: {
+      const { direction, amount = 500 } = payload || {};
+      debugLog('ContentScript', 'Scroll page:', direction, amount);
+      (async () => {
+        try {
+          switch (direction) {
+            case 'top':
+              window.scrollTo({ top: 0, behavior: 'smooth' });
+              break;
+            case 'bottom':
+              window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+              break;
+            case 'up': {
+              const scrollTop = window.scrollY - amount;
+              window.scrollTo({ top: Math.max(0, scrollTop), behavior: 'smooth' });
+              break;
+            }
+            case 'down': {
+              const scrollTop = window.scrollY + amount;
+              window.scrollTo({ top: scrollTop, behavior: 'smooth' });
+              break;
+            }
+            default:
+              sendResponse({ success: false, error: `Invalid direction: ${direction}` });
+              return;
+          }
+          
+          await new Promise(resolve => setTimeout(resolve, 800));
+          
+          sendResponse({ success: true, message: `Scrolled ${direction}`, currentScrollY: window.scrollY });
+        } catch (e) {
+          errorLog('ContentScript', 'Scroll error:', e);
+          sendResponse({ success: false, error: `Scroll error: ${(e as Error).message}` });
+        }
+      })();
+      return true;
+    }
+
+    case MessageType.HOVER_ELEMENT: {
+      const { selector, waitAfter = 500 } = payload || {};
+      debugLog('ContentScript', 'Hover element:', selector);
+      (async () => {
+        try {
+          if (!selector || typeof selector !== 'string') {
+            sendResponse({ success: false, error: 'Selector is required' });
+            return;
+          }
+          
+          const element = document.querySelector(selector);
+          if (!element) {
+            sendResponse({ success: false, error: `Element not found: ${selector}` });
+            return;
+          }
+          
+          const hoverEvent = new MouseEvent('mouseover', {
+            bubbles: true,
+            cancelable: true,
+          });
+          element.dispatchEvent(hoverEvent);
+          
+          await new Promise(resolve => setTimeout(resolve, waitAfter));
+          
+          sendResponse({ success: true, message: `Hovered element: ${selector}` });
+        } catch (e) {
+          errorLog('ContentScript', 'Hover error:', e);
+          sendResponse({ success: false, error: `Hover error: ${(e as Error).message}` });
+        }
+      })();
+      return true;
+    }
+
+    case MessageType.WAIT_FOR_ELEMENT: {
+      const { selector, timeout = 10000 } = payload || {};
+      debugLog('ContentScript', 'Wait for element:', selector, { timeout });
+      (async () => {
+        try {
+          if (!selector || typeof selector !== 'string') {
+            sendResponse({ success: false, error: 'Selector is required' });
+            return;
+          }
+          
+          const startTime = Date.now();
+          const checkInterval = 100;
+          
+          while (Date.now() - startTime < timeout) {
+            if (document.querySelector(selector)) {
+              sendResponse({ success: true, message: `Element found: ${selector}`, waitTime: Date.now() - startTime });
+              return;
+            }
+            await new Promise(resolve => setTimeout(resolve, checkInterval));
+          }
+          
+          if (!document.querySelector(selector)) {
+            sendResponse({ success: false, error: `Element not found within ${timeout}ms: ${selector}` });
+          }
+        } catch (e) {
+          errorLog('ContentScript', 'Wait error:', e);
+          sendResponse({ success: false, error: `Wait error: ${(e as Error).message}` });
+        }
+      })();
+      return true;
+    }
+
+    case MessageType.EXECUTE_SCRIPT: {
+      const { script } = payload || {};
+      debugLog('ContentScript', 'Execute script:', script?.slice(0, 50));
+      (async () => {
+        try {
+          if (!script || typeof script !== 'string') {
+            sendResponse({ success: false, error: 'Script is required' });
+            return;
+          }
+          
+          const result = await (new Function(`return (async () => {\n${script}\n})()`))();
+          sendResponse({ success: true, result: typeof result === 'string' ? result : JSON.stringify(result) });
+        } catch (e) {
+          errorLog('ContentScript', 'Execute script error:', e);
+          sendResponse({ success: false, error: `Script error: ${(e as Error).message}` });
+        }
+      })();
+      return true;
+    }
+
+    // 原有消息类型继续处理
     case MessageType.ELEMENT_HIGHLIGHT:
       if (payload.active) {
         picker.activate((elementInfo) => {
@@ -283,6 +477,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       const { query, maxResults: searchMax = 10, contextChars = 80 } = payload || {};
       debugLog('ContentScript', 'Search page:', query, { maxResults: searchMax, contextChars });
       try {
+        if (!query || typeof query !== 'string') {
+          sendResponse({ count: 0, matches: [], error: 'Search query is required' });
+          break;
+        }
         const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const regex = new RegExp(escaped, 'gi');
         const matches: Array<{ context: string; element: string }> = [];

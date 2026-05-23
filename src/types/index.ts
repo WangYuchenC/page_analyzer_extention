@@ -117,6 +117,56 @@ export interface StreamChunk {
   error?: { message: string; type: string };
 }
 
+export interface ClickElementPayload {
+  selector: string;
+  waitBefore?: number;
+  waitAfter?: number;
+}
+
+export interface InputTextPayload {
+  selector: string;
+  text: string;
+  submit?: boolean;
+}
+
+export interface ScrollPagePayload {
+  direction: 'top' | 'bottom' | 'up' | 'down';
+  amount?: number;
+}
+
+export interface HoverElementPayload {
+  selector: string;
+  waitAfter?: number;
+}
+
+export interface WaitForElementPayload {
+  selector: string;
+  timeout?: number;
+}
+
+export interface ExecuteScriptPayload {
+  script: string;
+}
+
+export interface NavigatePayload {
+  url: string;
+}
+
+export interface GetCookiesPayload {
+  url?: string;
+}
+
+export interface SetCookiePayload {
+  name: string;
+  value: string;
+  url?: string;
+  domain?: string;
+  path?: string;
+  expirationDate?: number;
+  secure?: boolean;
+  httpOnly?: boolean;
+}
+
 export enum MessageType {
   ELEMENT_SELECTED = 'ELEMENT_SELECTED',
   ELEMENT_HIGHLIGHT = 'ELEMENT_HIGHLIGHT',
@@ -130,6 +180,18 @@ export enum MessageType {
   DEBUGGER_DETACH = 'DEBUGGER_DETACH',
   NETWORK_REQUEST = 'NETWORK_REQUEST',
   NETWORK_RESPONSE = 'NETWORK_RESPONSE',
+  
+  CLICK_ELEMENT = 'CLICK_ELEMENT',
+  INPUT_TEXT = 'INPUT_TEXT',
+  SCROLL_PAGE = 'SCROLL_PAGE',
+  HOVER_ELEMENT = 'HOVER_ELEMENT',
+  WAIT_FOR_ELEMENT = 'WAIT_FOR_ELEMENT',
+  EXECUTE_SCRIPT = 'EXECUTE_SCRIPT',
+  NAVIGATE = 'NAVIGATE',
+  GET_COOKIES = 'GET_COOKIES',
+  SET_COOKIE = 'SET_COOKIE',
+  GO_BACK = 'GO_BACK',
+  GO_FORWARD = 'GO_FORWARD',
 }
 
 export interface Message<T = unknown> {
