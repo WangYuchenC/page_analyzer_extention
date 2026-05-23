@@ -432,6 +432,9 @@ export function createChromeTools(tabId: number) {
         if (!tab?.id) {
           return JSON.stringify({ error: "No active tab found" });
         }
+        if (tab.url?.startsWith("chrome://")) {
+          return JSON.stringify({ error: "Cannot access chrome:// URLs. Please use this tool on a regular web page." });
+        }
         const result = await sendToContentScript(tab.id, {
           type: MessageType.GET_PAGE_HTML,
           payload: {},
