@@ -1,7 +1,7 @@
 {
   "name": "page-analyzer-extension",
   "displayName": "Page Analyzer - LLM 辅助爬虫",
-  "version": "0.0.1",
+  "version": "0.1.0",
   "description": "通过 LLM 辅助分析页面结构，生成爬虫代码",
   "author": "WangYuchenC@github.com",
   "scripts": {
