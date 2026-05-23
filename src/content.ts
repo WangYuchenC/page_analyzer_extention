@@ -156,7 +156,7 @@ class ElementPicker {
     let current: HTMLElement | null = element;
 
     while (current && current.nodeType === Node.ELEMENT_NODE) {
-      let index = 0;
+      let index = 1;
       let sibling = current.previousSibling;
 
       while (sibling) {
@@ -170,7 +170,7 @@ class ElementPicker {
       }
 
       const tagName = current.tagName.toLowerCase();
-      const pathIndex = index > 0 ? `[${index + 1}]` : '';
+      const pathIndex = index > 1 ? `[${index}]` : '';
       paths.unshift(`${tagName}${pathIndex}`);
 
       current = current.parentElement;
@@ -271,7 +271,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
     case MessageType.SEARCH_PAGE: {
       const { query, maxResults: searchMax = 10, contextChars = 80 } = payload || {};
       try {
-        const regex = new RegExp(query, 'gi');
+        const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        const regex = new RegExp(escaped, 'gi');
         const matches: Array<{ context: string; element: string }> = [];
         const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
         let node: Text | null;

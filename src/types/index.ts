@@ -80,14 +80,6 @@ export interface ChatMessage {
   };
 }
 
-export interface PageData {
-  url: string;
-  title: string;
-  html: string;
-  screenshot?: string;
-  selectedElement?: ElementInfo;
-}
-
 export interface PageSummary {
   url: string;
   title: string;
@@ -130,20 +122,14 @@ export enum MessageType {
   ELEMENT_HIGHLIGHT = 'ELEMENT_HIGHLIGHT',
   CAPTURE_SCREENSHOT = 'CAPTURE_SCREENSHOT',
   GET_PAGE_HTML = 'GET_PAGE_HTML',
-  GET_PAGE_INFO = 'GET_PAGE_INFO',
   GET_PAGE_SUMMARY = 'GET_PAGE_SUMMARY',
   GET_SELECTED_ELEMENT = 'GET_SELECTED_ELEMENT',
   QUERY_SELECTOR = 'QUERY_SELECTOR',
   SEARCH_PAGE = 'SEARCH_PAGE',
   DEBUGGER_ATTACH = 'DEBUGGER_ATTACH',
   DEBUGGER_DETACH = 'DEBUGGER_DETACH',
-  DEBUGGER_SET_BREAKPOINT = 'DEBUGGER_SET_BREAKPOINT',
-  DEBUGGER_RESUME = 'DEBUGGER_RESUME',
   NETWORK_REQUEST = 'NETWORK_REQUEST',
   NETWORK_RESPONSE = 'NETWORK_RESPONSE',
-  LLM_ANALYZE = 'LLM_ANALYZE',
-  LLM_GENERATE_CODE = 'LLM_GENERATE_CODE',
-  OPEN_SIDE_PANEL = 'OPEN_SIDE_PANEL',
 }
 
 export interface Message<T = unknown> {

@@ -38,6 +38,21 @@ export function sendMessageToTab<T = unknown, R = unknown>(
   });
 }
 
+export async function sendToContentScript<T = unknown>(
+  tabId: number,
+  message: { type: MessageType; payload?: unknown }
+): Promise<T> {
+  try {
+    return await chrome.tabs.sendMessage(tabId, message);
+  } catch {
+    const jsFiles = chrome.runtime.getManifest().content_scripts?.[0]?.js;
+    if (jsFiles) {
+      await chrome.scripting.executeScript({ target: { tabId }, files: jsFiles });
+    }
+    return await chrome.tabs.sendMessage(tabId, message);
+  }
+}
+
 export function addMessageListener<T = unknown>(
   type: MessageType,
   handler: (payload: T, sender: chrome.runtime.MessageSender, sendResponse: (response?: unknown) => void) => void | Promise<unknown>

@@ -3,8 +3,13 @@ import type { NetworkRequest, NetworkResponse } from '~types';
 
 class DebuggerManager {
   private attachedTabs = new Set<number>();
-  private networkRequests = new Map<string, NetworkRequest>();
-  private networkResponses = new Map<string, NetworkResponse>();
+  private networkRequests = new Map<number, Map<string, NetworkRequest>>();
+  private networkResponses = new Map<number, Map<string, NetworkResponse>>();
+
+  constructor() {
+    chrome.debugger.onEvent.addListener(this.handleDebuggerEvent);
+    chrome.debugger.onDetach.addListener(this.handleDetach);
+  }
 
   async attach(tabId: number): Promise<void> {
     if (this.attachedTabs.has(tabId)) {
@@ -14,12 +19,11 @@ class DebuggerManager {
     try {
       await chrome.debugger.attach({ tabId }, '1.3');
       this.attachedTabs.add(tabId);
+      this.networkRequests.set(tabId, new Map());
+      this.networkResponses.set(tabId, new Map());
 
       await chrome.debugger.sendCommand({ tabId }, 'Network.enable');
       await chrome.debugger.sendCommand({ tabId }, 'Debugger.enable');
-
-      chrome.debugger.onEvent.addListener(this.handleDebuggerEvent.bind(this));
-      chrome.debugger.onDetach.addListener(this.handleDetach.bind(this));
 
       console.log(`Debugger attached to tab ${tabId}`);
     } catch (error) {
@@ -36,8 +40,8 @@ class DebuggerManager {
     try {
       await chrome.debugger.detach({ tabId });
       this.attachedTabs.delete(tabId);
-      this.networkRequests.clear();
-      this.networkResponses.clear();
+      this.networkRequests.delete(tabId);
+      this.networkResponses.delete(tabId);
       console.log(`Debugger detached from tab ${tabId}`);
     } catch (error) {
       console.error('Failed to detach debugger:', error);
@@ -50,7 +54,7 @@ class DebuggerManager {
     params: unknown
   ) => {
     const tabId = source.tabId;
-    if (!tabId) return;
+    if (!tabId || !this.attachedTabs.has(tabId)) return;
 
     switch (method) {
       case 'Network.requestWillBeSent': {
@@ -67,7 +71,7 @@ class DebuggerManager {
           postData: requestParams.request.postData,
           timestamp: requestParams.timestamp,
         };
-        this.networkRequests.set(requestParams.requestId, request);
+        this.networkRequests.get(tabId)?.set(requestParams.requestId, request);
 
         chrome.runtime.sendMessage({
           type: MessageType.NETWORK_REQUEST,
@@ -90,7 +94,7 @@ class DebuggerManager {
           headers: responseParams.response.headers,
           timestamp: responseParams.timestamp,
         };
-        this.networkResponses.set(responseParams.requestId, response);
+        this.networkResponses.get(tabId)?.set(responseParams.requestId, response);
 
         this.fetchResponseBody(tabId, responseParams.requestId);
         break;
@@ -106,7 +110,7 @@ class DebuggerManager {
         { requestId }
       ) as { body: string; base64Encoded: boolean };
 
-      const response = this.networkResponses.get(requestId);
+      const response = this.networkResponses.get(tabId)?.get(requestId);
       if (response) {
         response.body = result.base64Encoded
           ? atob(result.body)
@@ -125,6 +129,8 @@ class DebuggerManager {
   private handleDetach = (source: chrome.debugger.Debuggee) => {
     if (source.tabId) {
       this.attachedTabs.delete(source.tabId);
+      this.networkRequests.delete(source.tabId);
+      this.networkResponses.delete(source.tabId);
     }
   };
 
@@ -132,12 +138,26 @@ class DebuggerManager {
     return this.attachedTabs.has(tabId);
   }
 
-  getNetworkRequests(): NetworkRequest[] {
-    return Array.from(this.networkRequests.values());
+  getNetworkRequests(tabId?: number): NetworkRequest[] {
+    if (tabId) {
+      return Array.from(this.networkRequests.get(tabId)?.values() ?? []);
+    }
+    const all: NetworkRequest[] = [];
+    for (const map of this.networkRequests.values()) {
+      all.push(...map.values());
+    }
+    return all;
   }
 
-  getNetworkResponses(): NetworkResponse[] {
-    return Array.from(this.networkResponses.values());
+  getNetworkResponses(tabId?: number): NetworkResponse[] {
+    if (tabId) {
+      return Array.from(this.networkResponses.get(tabId)?.values() ?? []);
+    }
+    const all: NetworkResponse[] = [];
+    for (const map of this.networkResponses.values()) {
+      all.push(...map.values());
+    }
+    return all;
   }
 }
 

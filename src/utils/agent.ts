@@ -4,6 +4,7 @@ import { AIMessage, HumanMessage, SystemMessage, ToolMessage } from '@langchain/
 import type { BaseMessage } from '@langchain/core/messages';
 import type { ChatMessage } from '~types';
 import { MessageType } from '~types';
+import { sendToContentScript } from './messaging';
 
 // #region Follow-up streaming (bypasses LangChain message serialization
 // to handle reasoning_content pass-back for DeepSeek thinking mode)
@@ -78,7 +79,10 @@ export async function* streamFollowUp(
     throw new Error(`API error: ${res.status} ${body}`);
   }
 
-  const reader = res.body!.getReader();
+  if (!res.body) {
+    throw new Error('Response body is empty');
+  }
+  const reader = res.body.getReader();
   const decoder = new TextDecoder();
   let buffer = '';
 
@@ -136,18 +140,6 @@ const TOOL_TO_MESSAGE_TYPE: Record<string, MessageType> = {
   get_selected_element: MessageType.GET_SELECTED_ELEMENT,
 };
 
-async function sendToTab<T>(tabId: number, type: MessageType, payload: unknown): Promise<T> {
-  try {
-    return await chrome.tabs.sendMessage(tabId, { type, payload });
-  } catch {
-    const jsFiles = chrome.runtime.getManifest().content_scripts?.[0]?.js;
-    if (jsFiles) {
-      await chrome.scripting.executeScript({ target: { tabId }, files: jsFiles });
-    }
-    return await chrome.tabs.sendMessage(tabId, { type, payload });
-  }
-}
-
 export function createChromeTools(tabId: number): DynamicTool[] {
   return TOOL_CONFIGS.map(
     (config) =>
@@ -158,7 +150,7 @@ export function createChromeTools(tabId: number): DynamicTool[] {
           const messageType = TOOL_TO_MESSAGE_TYPE[config.name];
           try {
             const args = input ? JSON.parse(input) : {};
-            const result = await sendToTab(tabId, messageType, args);
+            const result = await sendToContentScript(tabId, messageType, args);
             return JSON.stringify(result, null, 2);
           } catch (error) {
             return JSON.stringify({ error: (error as Error).message });
@@ -168,12 +160,12 @@ export function createChromeTools(tabId: number): DynamicTool[] {
   );
 }
 
-export function createChatModel(apiKey: string, baseUrl: string, model: string): ChatOpenAI {
+export function createChatModel(apiKey: string, baseUrl: string, model: string, temperature = 0): ChatOpenAI {
   return new ChatOpenAI({
     apiKey: apiKey,
     configuration: { baseURL: baseUrl },
     model,
-    temperature: 0,
+    temperature,
     streaming: true,
   });
 }
@@ -236,7 +228,7 @@ export async function executeToolCalls(
         const args = tc.args
           ? (typeof tc.args === 'string' ? JSON.parse(tc.args) : tc.args)
           : {};
-        const result = await sendToTab(tabId, messageType, args);
+        const result = await sendToContentScript(tabId, messageType, args);
         return new ToolMessage({
           content: JSON.stringify(result, null, 2),
           tool_call_id: tc.id!,
