@@ -1,3 +1,6 @@
+// Polyfill for node:async_hooks before importing LangGraph
+import "~polyfills/async_hooks";
+
 import { useEffect, useRef, useState } from "react";
 import { Loader2, Globe, Settings, ChevronDown } from "lucide-react";
 import { MessageType } from "~types";
@@ -6,13 +9,11 @@ import { sendMessage, addMessageListener, sendToContentScript } from "~utils/mes
 import { useAppStore } from "~store/app-store";
 import { buildSystemPrompt } from "~utils/tools";
 import {
-  createChromeTools,
-  createChatModel,
-  toLangChainMessages,
-  executeToolCalls,
-  streamFollowUp,
-} from "~utils/agent";
-import { SystemMessage, HumanMessage, AIMessage } from "@langchain/core/messages";
+  createAgentGraph,
+  streamAgentResponse,
+} from "~utils/agent-graph";
+import { debugLog, errorLog, infoLog, enableDebug, disableDebug, isDebugEnabled } from "~utils/logger";
+import { HumanMessage } from "@langchain/core/messages";
 import MessageBubble from "~components/MessageBubble";
 import ChatInput from "~components/ChatInput";
 import NetworkTab from "~components/NetworkTab";
@@ -81,6 +82,11 @@ function SidePanel() {
     setTemperature,
   } = useAppStore();
 
+  // Log debug status on mount
+  useEffect(() => {
+    infoLog('SidePanel', 'Component mounted, debug enabled:', isDebugEnabled());
+  }, []);
+
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
@@ -89,6 +95,7 @@ function SidePanel() {
     const unsub1 = addMessageListener<ElementInfo>(
       MessageType.ELEMENT_SELECTED,
       (element) => {
+        debugLog('SidePanel', 'Element selected:', element.tagName);
         setSelectedElement(element);
         setIsPicking(false);
         const message: ChatMessage = {
@@ -130,14 +137,16 @@ function SidePanel() {
         try {
           const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
           if (tab?.id) {
+            debugLog('SidePanel', 'Fetching page summary for tab:', tab.id);
             const summary = await sendToContentScript<PageSummary>(tab.id, {
               type: MessageType.GET_PAGE_SUMMARY,
             });
+            debugLog('SidePanel', 'Page summary fetched:', summary.title);
             setPageSummary(summary);
             setSummaryFetched(true);
           }
-        } catch {
-          // content script may not be ready yet — skip silently
+        } catch (e) {
+          debugLog('SidePanel', 'Failed to fetch page summary:', e);
         }
       })();
     }
@@ -148,13 +157,14 @@ function SidePanel() {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) return;
 
+      debugLog('SidePanel', 'Starting element picking');
       await sendToContentScript(tab.id, {
         type: MessageType.ELEMENT_HIGHLIGHT,
         payload: { active: true },
       });
       setIsPicking(true);
     } catch (error) {
-      console.error("Failed to start picking:", error);
+      errorLog('SidePanel', 'Failed to start picking:', error);
     }
   };
 
@@ -162,8 +172,10 @@ function SidePanel() {
     try {
       setIsLoading(true);
       setStatusText("正在截图...");
+      debugLog('SidePanel', 'Capturing screenshot');
       const response = await sendMessage(MessageType.CAPTURE_SCREENSHOT, {});
       if (response?.screenshot) {
+        debugLog('SidePanel', 'Screenshot captured, size:', response.screenshot.length);
         setScreenshot(response.screenshot);
         const message: ChatMessage = {
           id: generateMsgId(),
@@ -175,7 +187,7 @@ function SidePanel() {
         addMessage(message);
       }
     } catch (error) {
-      console.error("Failed to capture screenshot:", error);
+      errorLog('SidePanel', 'Failed to capture screenshot:', error);
     } finally {
       setIsLoading(false);
       setStatusText(null);
@@ -189,11 +201,13 @@ function SidePanel() {
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) return;
 
+      debugLog('SidePanel', 'Getting page HTML');
       const response = await sendToContentScript<{ html: string; title: string; url: string }>(tab.id, {
         type: MessageType.GET_PAGE_HTML,
       });
 
       if (response?.html) {
+        debugLog('SidePanel', 'Page HTML fetched, length:', response.html.length);
         const msg: ChatMessage = {
           id: generateMsgId(),
           role: "assistant",
@@ -203,7 +217,7 @@ function SidePanel() {
         addMessage(msg);
       }
     } catch (error) {
-      console.error("Failed to get page HTML:", error);
+      errorLog('SidePanel', 'Failed to get page HTML:', error);
     } finally {
       setIsLoading(false);
       setStatusText(null);
@@ -216,9 +230,11 @@ function SidePanel() {
       if (!tab?.id) return;
 
       if (isDebuggerAttached) {
+        debugLog('SidePanel', 'Detaching debugger');
         await sendMessage(MessageType.DEBUGGER_DETACH, { tabId: tab.id });
         setIsDebuggerAttached(false);
       } else {
+        debugLog('SidePanel', 'Attaching debugger');
         await sendMessage(MessageType.DEBUGGER_ATTACH, { tabId: tab.id });
         setIsDebuggerAttached(true);
         const message: ChatMessage = {
@@ -230,12 +246,14 @@ function SidePanel() {
         addMessage(message);
       }
     } catch (error) {
-      console.error("Failed to toggle debugger:", error);
+      errorLog('SidePanel', 'Failed to toggle debugger:', error);
     }
   };
 
   const handleSendMessage = async () => {
     if (!input.trim() || !apiKey) return;
+
+    infoLog('SidePanel', 'Sending message, input length:', input.length);
 
     const userMsgId = generateMsgId();
     const userMessage: ChatMessage = {
@@ -272,6 +290,7 @@ function SidePanel() {
         try {
           const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
           if (tab?.id) {
+            debugLog('SidePanel', 'Fetching page summary before sending message');
             const summary = await sendToContentScript<PageSummary>(tab.id, {
               type: MessageType.GET_PAGE_SUMMARY,
             });
@@ -288,6 +307,8 @@ function SidePanel() {
         throw new Error("No active tab");
       }
 
+      debugLog('SidePanel', 'Active tab:', tab.id, tab.url);
+
       // Build system prompt with page context
       const contextParts: string[] = [];
       if (pageSummary) {
@@ -301,19 +322,22 @@ function SidePanel() {
       const pageContext = contextParts.length > 0 ? contextParts.join("\n\n") : "No page context available yet.";
       const systemContent = buildSystemPrompt(pageContext, true);
 
-      // Create LangChain chat model with tools
-      const chatModel = createChatModel(
+      debugLog('SidePanel', 'System prompt length:', systemContent.length);
+
+      // Create LangGraph Agent
+      infoLog('SidePanel', 'Creating LangGraph Agent...');
+      const agentGraph = createAgentGraph(
         apiKey,
         baseUrl || "https://api.openai.com/v1",
         model,
-        temperature
+        temperature,
+        tab.id,
+        systemContent
       );
-      const tools = createChromeTools(tab.id);
-      const modelWithTools = chatModel.bindTools(tools);
 
-      // Build messages: system + history + current user input
-      const systemMsg = new SystemMessage(systemContent);
-      const historyMsgs = toLangChainMessages(messages.slice(-20));
+      debugLog('SidePanel', 'Agent graph created');
+
+      // Build user message
       const userMsg = screenshot
         ? new HumanMessage({
             content: [
@@ -322,94 +346,99 @@ function SidePanel() {
             ],
           })
         : new HumanMessage(currentInput);
-      const allMessages = [systemMsg, ...historyMsgs, userMsg];
 
       setStatusText("正在生成...");
 
       // Track tool call info for UI
       let currentToolCalls: ToolCallInfo[] = [];
+      let hasToolCalls = false;
 
-      // First invocation: may return content or tool_calls
-      const response = await modelWithTools.invoke(allMessages, {
-        signal: controller.signal,
-        callbacks: [
-          {
-            handleLLMNewToken: (token: string) => {
-              appendToMessage(assistantMsgId, token);
-            },
-          },
-        ],
-      });
+      // Stream agent response with automatic multi-round tool calling
+      try {
+        infoLog('SidePanel', 'Starting agent stream...');
+        const stream = streamAgentResponse(agentGraph, [userMsg], controller.signal);
 
-      // Handle tool calls if any
-      if (response.tool_calls?.length && !controller.signal.aborted) {
-        setStatusText("正在分析页面...");
-
-        // Show tool call info in the current message
-        currentToolCalls = response.tool_calls.map((tc) => ({
-          id: tc.id || `${generateMsgId()}-${tc.name}`,
-          name: tc.name,
-          status: "running" as const,
-        }));
-        updateMessage(assistantMsgId, {
-          content: "",
-          metadata: { toolCallInfos: currentToolCalls },
-          isStreaming: false,
-        });
-
-        // Execute tools in parallel
-        const toolMessages = await executeToolCalls(response.tool_calls, tab.id);
-
-        // Mark all tools as completed
-        currentToolCalls = currentToolCalls.map((t) => ({
-          ...t,
-          status: "completed" as const,
-        }));
-        updateMessage(assistantMsgId, {
-          metadata: { toolCallInfos: currentToolCalls },
-        });
-
-        setStatusText("正在生成...");
-
-        // Create a new assistant message for the final response
-        const finalMsgId = generateMsgId();
-        addMessage({
-          id: finalMsgId,
-          role: "assistant",
-          content: "",
-          timestamp: Date.now(),
-          isStreaming: true,
-        });
-        setStreamingMessageId(finalMsgId);
-
-        // Second invocation with tool results
-        // Include the assistant message with tool_calls in history for proper context
-        const followUpStream = streamFollowUp(
-          apiKey,
-          baseUrl || "https://api.openai.com/v1",
-          model,
-          [...allMessages, response as AIMessage],
-          response as AIMessage,
-          toolMessages,
-          controller.signal
-        );
-
-        try {
-          for await (const token of followUpStream) {
-            if (controller.signal.aborted) break;
-            appendToMessage(finalMsgId, token);
+        for await (const chunk of stream) {
+          if (controller.signal.aborted) {
+            debugLog('SidePanel', 'Stream aborted');
+            break;
           }
-        } catch (streamError: any) {
-          console.error("Stream error:", streamError);
-          appendToMessage(finalMsgId, "\n[流式响应中断: " + (streamError.message || "未知错误") + "]");
+
+          if (chunk.type === "tool_call") {
+            // Handle tool calls
+            const toolCalls = chunk.data;
+            infoLog('SidePanel', 'Received tool calls:', toolCalls.length);
+
+            // Show tool call info
+            if (!hasToolCalls) {
+              // First batch of tool calls
+              hasToolCalls = true;
+              currentToolCalls = toolCalls.map((tc: any) => ({
+                id: tc.id || `${generateMsgId()}-${tc.name}`,
+                name: tc.name,
+                status: "running" as const,
+              }));
+              updateMessage(assistantMsgId, {
+                content: "",
+                metadata: { toolCallInfos: currentToolCalls },
+                isStreaming: false,
+              });
+            } else {
+              // Additional tool calls - create new message
+              const additionalToolCalls = toolCalls.map((tc: any) => ({
+                id: tc.id || `${generateMsgId()}-${tc.name}`,
+                name: tc.name,
+                status: "running" as const,
+              }));
+              const additionalMsgId = generateMsgId();
+              addMessage({
+                id: additionalMsgId,
+                role: "assistant",
+                content: "",
+                timestamp: Date.now(),
+                metadata: { toolCallInfos: additionalToolCalls },
+              });
+              currentToolCalls = [...currentToolCalls, ...additionalToolCalls];
+            }
+
+            setStatusText("正在分析页面...");
+          } else if (chunk.type === "content") {
+            // Handle content
+            if (hasToolCalls) {
+              // Create new message for final response after tool calls
+              const finalMsgId = generateMsgId();
+              addMessage({
+                id: finalMsgId,
+                role: "assistant",
+                content: chunk.data,
+                timestamp: Date.now(),
+                isStreaming: true,
+              });
+              setStreamingMessageId(finalMsgId);
+              hasToolCalls = false; // Reset for next potential round
+            } else {
+              // Direct content
+              appendToMessage(assistantMsgId, chunk.data);
+            }
+          }
         }
 
-        setMessageStreaming(finalMsgId, false);
-      } else if (!controller.signal.aborted) {
-        // No tool calls — content was streamed directly
+        infoLog('SidePanel', 'Agent stream complete');
+      } catch (streamError: any) {
+        errorLog('SidePanel', 'Stream error:', streamError);
+        if (assistantMsgId) {
+          appendToMessage(assistantMsgId, "\n[流式响应中断: " + (streamError.message || "未知错误") + "]");
+        }
+      }
+
+      // Mark streaming as complete
+      if (streamingMessageId) {
+        setMessageStreaming(streamingMessageId, false);
+      } else {
         setMessageStreaming(assistantMsgId, false);
       }
     } catch (error: any) {
+      errorLog('SidePanel', 'Error in handleSendMessage:', error);
       if (error.name === "AbortError") {
         updateMessage(assistantMsgId, { content: "已取消", isStreaming: false });
       } else {
@@ -421,10 +450,12 @@ function SidePanel() {
       setStreamingMessageId(null);
       setStatusText(null);
       abortRef.current = null;
+      infoLog('SidePanel', 'Message handling complete');
     }
   };
 
   const handleStop = () => {
+    debugLog('SidePanel', 'Stopping generation');
     abortRef.current?.abort();
     if (streamingMessageId) {
       setMessageStreaming(streamingMessageId, false);
@@ -441,6 +472,14 @@ function SidePanel() {
         setInput(messages[i].content);
         return;
       }
+    }
+  };
+
+  const toggleDebug = () => {
+    if (isDebugEnabled()) {
+      disableDebug();
+    } else {
+      enableDebug();
     }
   };
 
@@ -464,6 +503,13 @@ function SidePanel() {
               className={`px-3 py-1 text-sm rounded ${activeTab === "network" ? "bg-primary-100 text-primary-700" : "text-gray-600 hover:bg-gray-100"}`}
             >
               网络
+            </button>
+            <button
+              onClick={toggleDebug}
+              className={`px-3 py-1 text-xs rounded ${isDebugEnabled() ? "bg-green-100 text-green-700" : "text-gray-500 hover:bg-gray-100"}`}
+              title="Toggle Debug Mode"
+            >
+              {isDebugEnabled() ? "Debug ON" : "Debug OFF"}
             </button>
           </div>
         </div>

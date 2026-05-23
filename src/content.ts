@@ -1,5 +1,6 @@
 import { MessageType } from '~types';
 import type { ElementInfo } from '~types';
+import { debugLog, errorLog, infoLog } from '~utils/logger';
 
 class ElementPicker {
   private isActive = false;
@@ -16,6 +17,7 @@ class ElementPicker {
     this.createOverlay();
     this.bindEvents();
     document.body.style.cursor = 'crosshair';
+    debugLog('ElementPicker', 'Activated');
   }
 
   deactivate() {
@@ -26,6 +28,7 @@ class ElementPicker {
     this.unbindEvents();
     document.body.style.cursor = '';
     this.onElementSelected = null;
+    debugLog('ElementPicker', 'Deactivated');
   }
 
   private createOverlay() {
@@ -42,6 +45,7 @@ class ElementPicker {
       background: transparent;
     `;
     document.body.appendChild(this.overlay);
+    debugLog('ElementPicker', 'Overlay created');
   }
 
   private removeOverlay() {
@@ -108,6 +112,7 @@ class ElementPicker {
     if (target.id === 'page-analyzer-overlay') return;
 
     const elementInfo = this.extractElementInfo(target);
+    debugLog('ElementPicker', 'Element clicked:', elementInfo.tagName, elementInfo.cssSelector);
 
     (window as any).__pageAnalyzerSelectedElement = elementInfo;
 
@@ -120,6 +125,7 @@ class ElementPicker {
 
   private handleKeyDown = (e: KeyboardEvent) => {
     if (e.key === 'Escape') {
+      debugLog('ElementPicker', 'Escape pressed, deactivating');
       this.deactivate();
     }
   };
@@ -225,6 +231,7 @@ const picker = new ElementPicker();
 
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const { type, payload } = message;
+  debugLog('ContentScript', 'Received message:', type, payload);
 
   switch (type) {
     case MessageType.ELEMENT_HIGHLIGHT:
@@ -242,6 +249,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
 
     case MessageType.GET_PAGE_HTML:
+      debugLog('ContentScript', 'Getting page HTML');
       sendResponse({
         html: document.documentElement.outerHTML,
         title: document.title,
@@ -251,8 +259,10 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case MessageType.QUERY_SELECTOR: {
       const { selector, maxResults = 5, includeHtml = false } = payload || {};
+      debugLog('ContentScript', 'Query selector:', selector, { maxResults, includeHtml });
       try {
         const elements = Array.from(document.querySelectorAll(selector)).slice(0, maxResults);
+        debugLog('ContentScript', `Found ${elements.length} elements for selector:`, selector);
         sendResponse({
           count: elements.length,
           elements: elements.map((el) => ({
@@ -263,6 +273,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
           })),
         });
       } catch (e) {
+        errorLog('ContentScript', 'Invalid selector:', selector, e);
         sendResponse({ count: 0, elements: [], error: `Invalid selector: ${(e as Error).message}` });
       }
       break;
@@ -270,6 +281,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     case MessageType.SEARCH_PAGE: {
       const { query, maxResults: searchMax = 10, contextChars = 80 } = payload || {};
+      debugLog('ContentScript', 'Search page:', query, { maxResults: searchMax, contextChars });
       try {
         const escaped = query.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
         const regex = new RegExp(escaped, 'gi');
@@ -290,20 +302,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             });
           }
         }
+        debugLog('ContentScript', `Found ${matches.length} matches for query:`, query);
         sendResponse({ count: matches.length, matches });
       } catch (e) {
+        errorLog('ContentScript', 'Search error:', e);
         sendResponse({ count: 0, matches: [], error: `Search error: ${(e as Error).message}` });
       }
       break;
     }
 
     case MessageType.GET_PAGE_SUMMARY: {
+      debugLog('ContentScript', 'Getting page summary');
       const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6')).map((h) => ({
         level: parseInt(h.tagName[1]),
         text: (h as HTMLElement).innerText.slice(0, 200),
       }));
       const mainEl = document.querySelector('main, article, #content, .content, [role="main"]') || document.body;
-      sendResponse({
+      const summary = {
         url: window.location.href,
         title: document.title,
         metaDescription: document.querySelector('meta[name="description"]')?.getAttribute('content') || '',
@@ -313,19 +328,23 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         imageCount: document.querySelectorAll('img').length,
         textContentLength: document.body.innerText.length,
         mainContentPreview: (mainEl as HTMLElement).innerText?.slice(0, 2000) || '',
-      });
+      };
+      debugLog('ContentScript', 'Page summary:', summary.title, { headings: headings.length, links: summary.linkCount, images: summary.imageCount });
+      sendResponse(summary);
       break;
     }
 
     case MessageType.GET_SELECTED_ELEMENT: {
       const saved = (window as any).__pageAnalyzerSelectedElement;
+      debugLog('ContentScript', 'Get selected element:', saved ? 'found' : 'not found');
       sendResponse(saved ? { found: true, element: saved } : { found: false, message: 'No element selected. Use the element picker first.' });
       break;
     }
 
     default:
+      debugLog('ContentScript', 'Unknown message type:', type);
       break;
   }
 });
 
-console.log('Page Analyzer content script loaded');
+infoLog('ContentScript', 'Page Analyzer content script loaded on:', window.location.href);
