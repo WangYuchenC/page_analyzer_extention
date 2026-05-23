@@ -1,5 +1,5 @@
 import { MessageType } from '~types';
-import type { ElementInfo, NetworkRequest, NetworkResponse } from '~types';
+import type { NetworkRequest, NetworkResponse } from '~types';
 
 class DebuggerManager {
   private attachedTabs = new Set<number>();
@@ -168,13 +168,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       break;
 
-    case MessageType.GET_PAGE_INFO:
-      if (sender.tab?.id) {
-        handleGetPageInfo(sender.tab.id, sendResponse);
-        return true;
-      }
-      break;
-
     case MessageType.DEBUGGER_ATTACH:
       if (payload.tabId) {
         debuggerManager.attach(payload.tabId)
@@ -244,26 +237,3 @@ async function handleGetPageHTML(tabId: number, sendResponse: (response: unknown
   }
 }
 
-async function handleGetPageInfo(tabId: number, sendResponse: (response: unknown) => void) {
-  try {
-    const results = await chrome.scripting.executeScript({
-      target: { tabId },
-      func: () => {
-        return {
-          url: window.location.href,
-          title: document.title,
-          description: document.querySelector('meta[name="description"]')?.getAttribute('content') || '',
-          keywords: document.querySelector('meta[name="keywords"]')?.getAttribute('content') || '',
-        };
-      },
-    });
-
-    if (results && results[0]?.result) {
-      sendResponse(results[0].result);
-    } else {
-      sendResponse({ error: 'Failed to get page info' });
-    }
-  } catch (error) {
-    sendResponse({ error: (error as Error).message });
-  }
-}

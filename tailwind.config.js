@@ -13,6 +13,15 @@ module.exports = {
           600: '#2563eb',
           700: '#1d4ed8',
         }
+      },
+      animation: {
+        blink: 'blink 0.8s step-end infinite',
+      },
+      keyframes: {
+        blink: {
+          '0%, 100%': { opacity: '1' },
+          '50%': { opacity: '0' },
+        }
       }
     },
   },

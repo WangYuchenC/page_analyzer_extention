@@ -109,6 +109,8 @@ class ElementPicker {
 
     const elementInfo = this.extractElementInfo(target);
 
+    (window as any).__pageAnalyzerSelectedElement = elementInfo;
+
     if (this.onElementSelected) {
       this.onElementSelected(elementInfo);
     }
@@ -246,6 +248,79 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
         url: window.location.href,
       });
       break;
+
+    case MessageType.QUERY_SELECTOR: {
+      const { selector, maxResults = 5, includeHtml = false } = payload || {};
+      try {
+        const elements = Array.from(document.querySelectorAll(selector)).slice(0, maxResults);
+        sendResponse({
+          count: elements.length,
+          elements: elements.map((el) => ({
+            tagName: el.tagName.toLowerCase(),
+            text: (el as HTMLElement).innerText?.slice(0, 2000) || el.textContent?.slice(0, 2000) || '',
+            html: includeHtml ? el.innerHTML.slice(0, 3000) : undefined,
+            attributes: Object.fromEntries(Array.from(el.attributes).map((a) => [a.name, a.value])),
+          })),
+        });
+      } catch (e) {
+        sendResponse({ count: 0, elements: [], error: `Invalid selector: ${(e as Error).message}` });
+      }
+      break;
+    }
+
+    case MessageType.SEARCH_PAGE: {
+      const { query, maxResults: searchMax = 10, contextChars = 80 } = payload || {};
+      try {
+        const regex = new RegExp(query, 'gi');
+        const matches: Array<{ context: string; element: string }> = [];
+        const walker = document.createTreeWalker(document.body, NodeFilter.SHOW_TEXT, null, false);
+        let node: Text | null;
+        while ((node = walker.nextNode() as Text | null) && matches.length < searchMax) {
+          const text = node.textContent || '';
+          let match: RegExpExecArray | null;
+          while ((match = regex.exec(text)) !== null && matches.length < searchMax) {
+            const start = Math.max(0, match.index - contextChars);
+            const end = Math.min(text.length, match.index + match[0].length + contextChars);
+            const context = (start > 0 ? '...' : '') + text.slice(start, end) + (end < text.length ? '...' : '');
+            const el = node.parentElement;
+            matches.push({
+              context,
+              element: el ? `${el.tagName.toLowerCase()}${el.id ? '#' + el.id : ''}${el.className ? '.' + el.className.split(' ').slice(0, 2).join('.') : ''}` : 'unknown',
+            });
+          }
+        }
+        sendResponse({ count: matches.length, matches });
+      } catch (e) {
+        sendResponse({ count: 0, matches: [], error: `Search error: ${(e as Error).message}` });
+      }
+      break;
+    }
+
+    case MessageType.GET_PAGE_SUMMARY: {
+      const headings = Array.from(document.querySelectorAll('h1,h2,h3,h4,h5,h6')).map((h) => ({
+        level: parseInt(h.tagName[1]),
+        text: (h as HTMLElement).innerText.slice(0, 200),
+      }));
+      const mainEl = document.querySelector('main, article, #content, .content, [role="main"]') || document.body;
+      sendResponse({
+        url: window.location.href,
+        title: document.title,
+        metaDescription: document.querySelector('meta[name="description"]')?.getAttribute('content') || '',
+        language: document.documentElement.lang || '',
+        headings,
+        linkCount: document.querySelectorAll('a').length,
+        imageCount: document.querySelectorAll('img').length,
+        textContentLength: document.body.innerText.length,
+        mainContentPreview: (mainEl as HTMLElement).innerText?.slice(0, 2000) || '',
+      });
+      break;
+    }
+
+    case MessageType.GET_SELECTED_ELEMENT: {
+      const saved = (window as any).__pageAnalyzerSelectedElement;
+      sendResponse(saved ? { found: true, element: saved } : { found: false, message: 'No element selected. Use the element picker first.' });
+      break;
+    }
 
     default:
       break;

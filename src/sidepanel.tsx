@@ -1,8 +1,7 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import {
   MousePointer,
   Camera,
-  Code,
   Bug,
   Send,
   Loader2,
@@ -11,11 +10,24 @@ import {
   FileCode,
   Network,
   Settings,
-  ChevronDown
+  ChevronDown,
+  RefreshCw,
 } from "lucide-react";
-import { MessageType, type ElementInfo, type ChatMessage, type NetworkRequest, type NetworkResponse } from "~types";
+import { MessageType } from "~types";
+import type {
+  ElementInfo,
+  ChatMessage,
+  NetworkRequest,
+  NetworkResponse,
+  PageSummary,
+  ToolCall,
+  ToolCallInfo,
+  StreamChunk,
+} from "~types";
 import { sendMessage, addMessageListener } from "~utils/messaging";
 import { useAppStore } from "~store/app-store";
+import { streamChatCompletion } from "~utils/streaming";
+import { TOOL_DEFINITIONS, accumulateToolCallDeltas, getToolCallArgs, buildSystemPrompt } from "~utils/tools";
 import "../style.css";
 
 async function sendToContentScript<T = unknown>(
@@ -23,20 +35,27 @@ async function sendToContentScript<T = unknown>(
   message: { type: MessageType; payload?: unknown }
 ): Promise<T> {
   try {
-    return await chrome.tabs.sendMessage(tabId, message)
+    return await chrome.tabs.sendMessage(tabId, message);
   } catch {
-    // Content script not injected — inject it programmatically, then retry
-    const manifest = chrome.runtime.getManifest()
-    const jsFiles = manifest.content_scripts?.[0]?.js
+    const manifest = chrome.runtime.getManifest();
+    const jsFiles = manifest.content_scripts?.[0]?.js;
     if (jsFiles) {
       await chrome.scripting.executeScript({
         target: { tabId },
-        files: jsFiles
-      })
+        files: jsFiles,
+      });
     }
-    return await chrome.tabs.sendMessage(tabId, message)
+    return await chrome.tabs.sendMessage(tabId, message);
   }
 }
+
+const SYSTEM_PROMPT_BASE = `You are a web scraping assistant. Help users analyze web pages and generate scraping code.
+
+## Guidelines
+- You can use tools to investigate the page when you need details beyond the summary
+- Prefer CSS selectors over XPath when generating code
+- Generate Python code using requests/bs4 or Playwright when appropriate
+- If the user hasn't provided enough context, use your tools to find it`;
 
 function SidePanel() {
   const [input, setInput] = useState("");
@@ -44,17 +63,25 @@ function SidePanel() {
   const [isPicking, setIsPicking] = useState(false);
   const [isDebuggerAttached, setIsDebuggerAttached] = useState(false);
   const [activeTab, setActiveTab] = useState<"chat" | "network">("chat");
+  const [streamingMessageId, setStreamingMessageId] = useState<string | null>(null);
+  const [statusText, setStatusText] = useState<string | null>(null);
+  const [summaryFetched, setSummaryFetched] = useState(false);
+  const abortRef = useRef<AbortController | null>(null);
   const messagesEndRef = useRef<HTMLDivElement>(null);
 
   const {
     messages,
     addMessage,
+    updateMessage,
+    appendToMessage,
+    setMessageStreaming,
+    clearMessages,
     selectedElement,
     setSelectedElement,
     screenshot,
     setScreenshot,
-    pageHtml,
-    setPageHtml,
+    pageSummary,
+    setPageSummary,
     networkRequests,
     addNetworkRequest,
     networkResponses,
@@ -72,7 +99,7 @@ function SidePanel() {
   }, [messages]);
 
   useEffect(() => {
-    const unsubscribe1 = addMessageListener<ElementInfo>(
+    const unsub1 = addMessageListener<ElementInfo>(
       MessageType.ELEMENT_SELECTED,
       (element) => {
         setSelectedElement(element);
@@ -82,20 +109,20 @@ function SidePanel() {
           role: "assistant",
           content: `已选择元素: \`${element.tagName}\`\n\n**XPath:** \`${element.xpath}\`\n**CSS Selector:** \`${element.cssSelector}\`\n\n**内容预览:**\n\`\`\`\n${element.innerText.slice(0, 200)}\n\`\`\``,
           timestamp: Date.now(),
-          metadata: { elementInfo: element }
+          metadata: { elementInfo: element },
         };
         addMessage(message);
       }
     );
 
-    const unsubscribe2 = addMessageListener<NetworkRequest>(
+    const unsub2 = addMessageListener<NetworkRequest>(
       MessageType.NETWORK_REQUEST,
       (request) => {
         addNetworkRequest(request);
       }
     );
 
-    const unsubscribe3 = addMessageListener<NetworkResponse>(
+    const unsub3 = addMessageListener<NetworkResponse>(
       MessageType.NETWORK_RESPONSE,
       (response) => {
         addNetworkResponse(response);
@@ -103,11 +130,31 @@ function SidePanel() {
     );
 
     return () => {
-      unsubscribe1();
-      unsubscribe2();
-      unsubscribe3();
+      unsub1();
+      unsub2();
+      unsub3();
     };
   }, [addMessage, setSelectedElement, addNetworkRequest, addNetworkResponse]);
+
+  // Fetch page summary on mount
+  useEffect(() => {
+    if (!summaryFetched) {
+      (async () => {
+        try {
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (tab?.id) {
+            const summary = await sendToContentScript<PageSummary>(tab.id, {
+              type: MessageType.GET_PAGE_SUMMARY,
+            });
+            setPageSummary(summary);
+            setSummaryFetched(true);
+          }
+        } catch {
+          // content script may not be ready yet — skip silently
+        }
+      })();
+    }
+  }, [summaryFetched, setPageSummary]);
 
   const handleStartPicking = async () => {
     try {
@@ -116,7 +163,7 @@ function SidePanel() {
 
       await sendToContentScript(tab.id, {
         type: MessageType.ELEMENT_HIGHLIGHT,
-        payload: { active: true }
+        payload: { active: true },
       });
       setIsPicking(true);
     } catch (error) {
@@ -127,6 +174,7 @@ function SidePanel() {
   const handleCaptureScreenshot = async () => {
     try {
       setIsLoading(true);
+      setStatusText("正在截图...");
       const response = await sendMessage(MessageType.CAPTURE_SCREENSHOT, {});
       if (response?.screenshot) {
         setScreenshot(response.screenshot);
@@ -135,7 +183,7 @@ function SidePanel() {
           role: "assistant",
           content: "已捕获页面截图",
           timestamp: Date.now(),
-          metadata: { screenshot: response.screenshot }
+          metadata: { screenshot: response.screenshot },
         };
         addMessage(message);
       }
@@ -143,34 +191,35 @@ function SidePanel() {
       console.error("Failed to capture screenshot:", error);
     } finally {
       setIsLoading(false);
+      setStatusText(null);
     }
   };
 
   const handleGetPageHtml = async () => {
     try {
       setIsLoading(true);
+      setStatusText("正在获取页面 HTML...");
       const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
       if (!tab?.id) return;
 
       const response = await sendToContentScript<{ html: string; title: string; url: string }>(tab.id, {
-        type: MessageType.GET_PAGE_HTML
+        type: MessageType.GET_PAGE_HTML,
       });
 
       if (response?.html) {
-        setPageHtml(response.html);
-        const message: ChatMessage = {
+        const msg: ChatMessage = {
           id: Date.now().toString(),
           role: "assistant",
           content: `已获取页面 HTML (${response.html.length} 字符)`,
           timestamp: Date.now(),
-          metadata: { htmlSnippet: response.html.slice(0, 500) }
         };
-        addMessage(message);
+        addMessage(msg);
       }
     } catch (error) {
       console.error("Failed to get page HTML:", error);
     } finally {
       setIsLoading(false);
+      setStatusText(null);
     }
   };
 
@@ -189,7 +238,7 @@ function SidePanel() {
           id: Date.now().toString(),
           role: "assistant",
           content: "Debugger 已附加到当前页面，开始监听网络请求...",
-          timestamp: Date.now()
+          timestamp: Date.now(),
         };
         addMessage(message);
       }
@@ -198,95 +247,322 @@ function SidePanel() {
     }
   };
 
+  const formatPageSummary = useCallback((summary: PageSummary): string => {
+    return [
+      `## Current Page`,
+      `URL: ${summary.url}`,
+      `Title: ${summary.title}`,
+      `Description: ${summary.metaDescription || "(none)"}`,
+      `Language: ${summary.language || "unknown"}`,
+      ``,
+      `### Headings Structure`,
+      ...summary.headings.map((h) => `${"  ".repeat(Math.max(0, h.level - 1))}${"#".repeat(h.level)} ${h.text}`),
+      ``,
+      `### Content Preview (${summary.textContentLength} total chars)`,
+      summary.mainContentPreview.slice(0, 2000),
+      ``,
+      `Links: ${summary.linkCount} | Images: ${summary.imageCount}`,
+    ].join("\n");
+  }, []);
+
+  const executeToolCall = async (
+    tabId: number,
+    toolCall: ToolCall
+  ): Promise<{ role: "tool"; tool_call_id: string; content: string; name: string }> => {
+    const toolToType: Record<string, MessageType> = {
+      query_selector: MessageType.QUERY_SELECTOR,
+      search_page: MessageType.SEARCH_PAGE,
+      get_page_info: MessageType.GET_PAGE_INFO,
+      get_selected_element: MessageType.GET_SELECTED_ELEMENT,
+    };
+
+    const messageType = toolToType[toolCall.function.name];
+    if (!messageType) {
+      return {
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: `Unknown tool: ${toolCall.function.name}`,
+        name: toolCall.function.name,
+      };
+    }
+
+    const args = getToolCallArgs(toolCall.function.arguments);
+    try {
+      const result = await sendToContentScript(tabId, {
+        type: messageType,
+        payload: args,
+      });
+      return {
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: JSON.stringify(result, null, 2),
+        name: toolCall.function.name,
+      };
+    } catch (error) {
+      return {
+        role: "tool",
+        tool_call_id: toolCall.id,
+        content: `Error: ${(error as Error).message}`,
+        name: toolCall.function.name,
+      };
+    }
+  };
+
+  const buildLLMMessages = useCallback(() => {
+    const contextParts: string[] = [];
+
+    if (pageSummary) {
+      contextParts.push(formatPageSummary(pageSummary));
+    }
+
+    if (selectedElement) {
+      contextParts.push(
+        `## Selected Element\ntagName: ${selectedElement.tagName}\nXPath: ${selectedElement.xpath}\nCSS: ${selectedElement.cssSelector}\nText: ${selectedElement.innerText.slice(0, 200)}`
+      );
+    }
+
+    const pageContext = contextParts.length > 0 ? contextParts.join("\n\n") : "No page context available yet.";
+    const systemContent = buildSystemPrompt(pageContext, true);
+
+    // Build conversation history: include last 20 messages (excluding the current user's new message)
+    const historyMessages = messages.slice(-20).map((m) => {
+      if (m.role === "tool") {
+        return { role: "tool" as const, tool_call_id: m.tool_call_id!, content: m.content, name: m.name };
+      }
+      return { role: m.role as "user" | "assistant", content: m.content };
+    });
+
+    return [
+      { role: "system" as const, content: systemContent },
+      ...historyMessages,
+    ];
+  }, [messages, pageSummary, selectedElement, formatPageSummary]);
+
   const handleSendMessage = async () => {
     if (!input.trim() || !apiKey) return;
 
+    const userMsgId = Date.now().toString();
     const userMessage: ChatMessage = {
-      id: Date.now().toString(),
+      id: userMsgId,
       role: "user",
       content: input,
-      timestamp: Date.now()
+      timestamp: Date.now(),
     };
     addMessage(userMessage);
+    const currentInput = input;
     setInput("");
     setIsLoading(true);
+    setStatusText("正在连接 LLM...");
+
+    // Cancel any previous request
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+
+    const assistantMsgId = (Date.now() + 1).toString();
+    const placeholder: ChatMessage = {
+      id: assistantMsgId,
+      role: "assistant",
+      content: "",
+      timestamp: Date.now(),
+      isStreaming: true,
+    };
+    addMessage(placeholder);
+    setStreamingMessageId(assistantMsgId);
 
     try {
-      const contextParts: string[] = [];
-      if (selectedElement) {
-        contextParts.push(`Selected Element:\nTag: ${selectedElement.tagName}\nXPath: ${selectedElement.xpath}\nCSS: ${selectedElement.cssSelector}\nText: ${selectedElement.innerText.slice(0, 200)}`);
-      }
-      if (pageHtml) {
-        contextParts.push(`Page HTML (truncated):\n${pageHtml.slice(0, 3000)}`);
-      }
-
-      const userContent: string | object[] = contextParts.length > 0
-        ? `${contextParts.join("\n\n")}\n\nUser question: ${input}`
-        : input;
-
-      const messages_for_llm = [
-        {
-          role: "system",
-          content: `You are a web scraping assistant. Help users analyze web pages and generate scraping code.
-When users select elements or ask about data extraction, provide specific CSS selectors or XPath expressions.
-Generate Python code using requests/bs4 or Playwright when appropriate.`
-        },
-        {
-          role: "user",
-          content: screenshot
-            ? [
-                { type: "text", text: userContent },
-                { type: "image_url", image_url: { url: screenshot } }
-              ]
-            : userContent
-        }
-      ];
-
-      const response = await fetch(`${baseUrl || 'https://api.openai.com/v1'}/chat/completions`, {
-        method: 'POST',
-        headers: {
-          'Content-Type': 'application/json',
-          'Authorization': `Bearer ${apiKey}`,
-        },
-        body: JSON.stringify({
-          model: model,
-          messages: messages_for_llm,
-          max_tokens: 2000,
-        }),
-      });
-
-      if (!response.ok) {
-        let detail = ''
+      // Fetch page summary if not yet fetched
+      if (!summaryFetched) {
         try {
-          const err = await response.json()
-          detail = err.error?.message || JSON.stringify(err)
+          const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+          if (tab?.id) {
+            const summary = await sendToContentScript<PageSummary>(tab.id, {
+              type: MessageType.GET_PAGE_SUMMARY,
+            });
+            setPageSummary(summary);
+            setSummaryFetched(true);
+          }
         } catch {
-          detail = response.statusText
+          // continue without summary
         }
-        throw new Error(`API error: ${response.status} — ${detail}`);
       }
 
-      const data = await response.json();
-      const content = data.choices?.[0]?.message?.content || "No response";
+      const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
+      if (!tab?.id) {
+        throw new Error("No active tab");
+      }
 
-      const assistantMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content,
-        timestamp: Date.now()
-      };
-      addMessage(assistantMessage);
-    } catch (error) {
-      console.error("Failed to get LLM response:", error);
-      const errorMessage: ChatMessage = {
-        id: (Date.now() + 1).toString(),
-        role: "assistant",
-        content: `Error: ${(error as Error).message}`,
-        timestamp: Date.now()
-      };
-      addMessage(errorMessage);
+      const llmMessages = buildLLMMessages();
+
+      // Add the current user message (with screenshot if available)
+      const userContent: string | object[] = screenshot
+        ? [
+            { type: "text" as const, text: currentInput },
+            { type: "image_url" as const, image_url: { url: screenshot } },
+          ]
+        : currentInput;
+      llmMessages.push({ role: "user" as const, content: userContent as string });
+
+      setStatusText("正在生成...");
+
+      const stream = streamChatCompletion(
+        `${baseUrl || "https://api.openai.com/v1"}/chat/completions`,
+        apiKey,
+        {
+          model,
+          messages: llmMessages,
+          max_tokens: 4096,
+          tools: TOOL_DEFINITIONS,
+          tool_choice: "auto",
+        },
+        controller.signal
+      );
+
+      let accumulatedToolCalls: ToolCall[] | null = null;
+
+      for await (const event of stream) {
+        if (controller.signal.aborted) break;
+
+        const choice = event.choices?.[0];
+        if (!choice) continue;
+
+        // Content delta — append to streaming message
+        if (choice.delta?.content) {
+          appendToMessage(assistantMsgId, choice.delta.content);
+        }
+
+        // Tool call delta — accumulate
+        if (choice.delta?.tool_calls) {
+          accumulatedToolCalls = accumulateToolCallDeltas(accumulatedToolCalls, choice.delta.tool_calls);
+        }
+
+        // Finish
+        if (choice.finish_reason === "stop") {
+          setMessageStreaming(assistantMsgId, false);
+        }
+      }
+
+      // Handle tool calls if any
+      if (accumulatedToolCalls && accumulatedToolCalls.length > 0 && !controller.signal.aborted) {
+        setStatusText("正在分析页面...");
+
+        const toolCallInfos: ToolCallInfo[] = accumulatedToolCalls.map((tc) => ({
+          id: tc.id,
+          name: tc.function.name,
+          status: "running" as const,
+        }));
+
+        updateMessage(assistantMsgId, {
+          content: "",
+          metadata: { toolCallInfos },
+          isStreaming: false,
+        });
+
+        // Execute tool calls in parallel
+        const toolResults = await Promise.all(
+          accumulatedToolCalls.map(async (tc) => {
+            const result = await executeToolCall(tab.id, tc);
+            // Update tool call info status
+            const status: ToolCallInfo["status"] = result.content.startsWith("Error:") ? "error" : "completed";
+            updateMessage(assistantMsgId, {
+              metadata: {
+                toolCallInfos: (accumulatedToolCalls || []).map((t) => ({
+                  id: t.id,
+                  name: t.function.name,
+                  status: t.id === tc.id ? status : "completed",
+                })),
+              },
+            });
+            return result;
+          })
+        );
+
+        setStatusText("正在生成...");
+
+        // Add tool results and make second LLM call
+        const toolResponseMsgId = (Date.now() + 2).toString();
+        const toolResponsePlaceholder: ChatMessage = {
+          id: toolResponseMsgId,
+          role: "assistant",
+          content: "",
+          timestamp: Date.now(),
+          isStreaming: true,
+        };
+        addMessage(toolResponsePlaceholder);
+        setStreamingMessageId(toolResponseMsgId);
+
+        const secondMessages = [
+          ...llmMessages,
+          {
+            role: "assistant" as const,
+            content: null as unknown as string,
+            tool_calls: accumulatedToolCalls.map((tc) => ({
+              id: tc.id,
+              type: "function" as const,
+              function: { name: tc.function.name, arguments: tc.function.arguments },
+            })),
+          },
+          ...toolResults.map((r) => ({
+            role: "tool" as const,
+            tool_call_id: r.tool_call_id,
+            content: r.content,
+          })),
+        ];
+
+        const secondStream = streamChatCompletion(
+          `${baseUrl || "https://api.openai.com/v1"}/chat/completions`,
+          apiKey,
+          {
+            model,
+            messages: secondMessages,
+            max_tokens: 4096,
+          },
+          controller.signal
+        );
+
+        for await (const event of secondStream) {
+          if (controller.signal.aborted) break;
+          if (event.choices?.[0]?.delta?.content) {
+            appendToMessage(toolResponseMsgId, event.choices[0].delta.content);
+          }
+          if (event.choices?.[0]?.finish_reason === "stop") {
+            setMessageStreaming(toolResponseMsgId, false);
+          }
+        }
+      }
+    } catch (error: any) {
+      if (error.name === "AbortError" || error.name === "TypeError") {
+        updateMessage(assistantMsgId, { content: "已取消", isStreaming: false });
+      } else {
+        const errMsg = error.message || String(error);
+        updateMessage(assistantMsgId, { content: `Error: ${errMsg}`, isStreaming: false });
+      }
     } finally {
       setIsLoading(false);
+      setStreamingMessageId(null);
+      setStatusText(null);
+      abortRef.current = null;
+    }
+  };
+
+  const handleStop = () => {
+    abortRef.current?.abort();
+    if (streamingMessageId) {
+      setMessageStreaming(streamingMessageId, false);
+    }
+    setIsLoading(false);
+    setStreamingMessageId(null);
+    setStatusText(null);
+  };
+
+  const handleRetry = (msg: ChatMessage) => {
+    // Find the preceding user message and resend
+    const idx = messages.indexOf(msg);
+    for (let i = idx - 1; i >= 0; i--) {
+      if (messages[i].role === "user") {
+        setInput(messages[i].content);
+        return;
+      }
     }
   };
 
@@ -322,11 +598,18 @@ Generate Python code using requests/bs4 or Playwright when appropriate.`
         </div>
       </header>
 
+      {/* Status bar */}
+      {statusText && (
+        <div className="bg-blue-50 border-b border-blue-200 px-4 py-1.5 text-xs text-blue-700 flex items-center gap-2">
+          <Loader2 className="w-3 h-3 animate-spin" />
+          {statusText}
+        </div>
+      )}
+
+      {/* Settings */}
       {!apiKey && (
         <div className="bg-yellow-50 border-b border-yellow-200 px-4 py-3 space-y-2">
-          <label className="block text-sm font-medium text-yellow-800 mb-1">
-            API 配置
-          </label>
+          <label className="block text-sm font-medium text-yellow-800 mb-1">API 配置</label>
           <input
             type="password"
             placeholder="API Key (必填)"
@@ -355,8 +638,8 @@ Generate Python code using requests/bs4 or Playwright when appropriate.`
         <div className="bg-gray-50 border-b border-gray-200 px-4 py-2">
           <button
             onClick={() => {
-              const el = document.getElementById('api-config')
-              if (el) el.classList.toggle('hidden')
+              const el = document.getElementById("api-config");
+              if (el) el.classList.toggle("hidden");
             }}
             className="flex items-center gap-1 text-xs text-gray-500 hover:text-gray-700"
           >
@@ -390,14 +673,13 @@ Generate Python code using requests/bs4 or Playwright when appropriate.`
         </div>
       )}
 
+      {/* Toolbar */}
       <div className="flex gap-2 p-3 bg-white border-b border-gray-200">
         <button
           onClick={handleStartPicking}
           disabled={isPicking}
           className={`flex-1 flex items-center justify-center gap-1 px-3 py-2 rounded text-sm font-medium transition-colors ${
-            isPicking
-              ? "bg-primary-100 text-primary-700"
-              : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            isPicking ? "bg-primary-100 text-primary-700" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
           }`}
         >
           <MousePointer className="w-4 h-4" />
@@ -422,9 +704,7 @@ Generate Python code using requests/bs4 or Playwright when appropriate.`
         <button
           onClick={handleToggleDebugger}
           className={`flex-1 flex items-center justify-center gap-1 px-3 py-2 rounded text-sm font-medium transition-colors ${
-            isDebuggerAttached
-              ? "bg-red-100 text-red-700 hover:bg-red-200"
-              : "bg-gray-100 text-gray-700 hover:bg-gray-200"
+            isDebuggerAttached ? "bg-red-100 text-red-700 hover:bg-red-200" : "bg-gray-100 text-gray-700 hover:bg-gray-200"
           }`}
         >
           <Bug className="w-4 h-4" />
@@ -432,6 +712,7 @@ Generate Python code using requests/bs4 or Playwright when appropriate.`
         </button>
       </div>
 
+      {/* Chat tab */}
       {activeTab === "chat" ? (
         <>
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
@@ -439,7 +720,7 @@ Generate Python code using requests/bs4 or Playwright when appropriate.`
               <div className="text-center text-gray-500 py-8">
                 <Globe className="w-12 h-12 mx-auto mb-3 text-gray-300" />
                 <p className="text-sm">欢迎使用 Page Analyzer</p>
-                <p className="text-xs mt-1">选择页面元素或截图，与 AI 对话生成爬虫代码</p>
+                <p className="text-xs mt-1">页面摘要已自动获取，发送消息即可开始分析</p>
               </div>
             )}
 
@@ -455,23 +736,60 @@ Generate Python code using requests/bs4 or Playwright when appropriate.`
                       : "bg-white border border-gray-200 text-gray-800"
                   }`}
                 >
+                  {/* Tool call info */}
+                  {msg.metadata?.toolCallInfos && msg.metadata.toolCallInfos.length > 0 && (
+                    <div className="mb-2 space-y-1 border border-gray-200 rounded p-2 bg-gray-50 text-xs">
+                      {msg.metadata.toolCallInfos.map((tc) => (
+                        <div key={tc.id} className="flex items-center gap-2">
+                          <span
+                            className={`w-2 h-2 rounded-full ${
+                              tc.status === "running"
+                                ? "bg-yellow-400 animate-pulse"
+                                : tc.status === "completed"
+                                  ? "bg-green-500"
+                                  : "bg-red-500"
+                            }`}
+                          />
+                          <span className="font-mono text-gray-700">{tc.name}</span>
+                          {tc.status === "running" && <span className="text-yellow-600">执行中...</span>}
+                          {tc.status === "completed" && <span className="text-green-600">完成</span>}
+                          {tc.status === "error" && <span className="text-red-600">错误</span>}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+
+                  {/* Message content */}
                   <div className="whitespace-pre-wrap">
                     {msg.content.split("```").map((part, index) => {
                       if (index % 2 === 1) {
                         return (
-                          <pre key={index} className="bg-gray-900 text-gray-100 p-2 rounded my-2 overflow-x-auto">
+                          <pre
+                            key={index}
+                            className="bg-gray-900 text-gray-100 p-2 rounded my-2 overflow-x-auto"
+                          >
                             <code>{part}</code>
                           </pre>
                         );
                       }
                       return part.split("`").map((inline, i) => {
                         if (i % 2 === 1) {
-                          return <code key={i} className="bg-gray-100 px-1 rounded text-primary-700">{inline}</code>;
+                          return (
+                            <code key={i} className="bg-gray-100 px-1 rounded text-primary-700">
+                              {inline}
+                            </code>
+                          );
                         }
                         return inline;
                       });
                     })}
+                    {/* Streaming cursor */}
+                    {msg.isStreaming && (
+                      <span className="inline-block w-2 h-4 bg-gray-600 animate-blink ml-0.5" />
+                    )}
                   </div>
+
+                  {/* Screenshot */}
                   {msg.metadata?.screenshot && (
                     <img
                       src={msg.metadata.screenshot}
@@ -479,12 +797,24 @@ Generate Python code using requests/bs4 or Playwright when appropriate.`
                       className="mt-2 rounded max-w-full"
                     />
                   )}
+
+                  {/* Retry button */}
+                  {msg.content.startsWith("Error:") && !msg.isStreaming && (
+                    <button
+                      onClick={() => handleRetry(msg)}
+                      className="mt-2 flex items-center gap-1 text-xs text-primary-600 hover:text-primary-700"
+                    >
+                      <RefreshCw className="w-3 h-3" />
+                      重试
+                    </button>
+                  )}
                 </div>
               </div>
             ))}
             <div ref={messagesEndRef} />
           </div>
 
+          {/* Input area */}
           <div className="border-t border-gray-200 bg-white p-3">
             <div className="flex gap-2">
               <textarea
@@ -496,21 +826,27 @@ Generate Python code using requests/bs4 or Playwright when appropriate.`
                 className="flex-1 px-3 py-2 border border-gray-300 rounded-lg resize-none text-sm focus:outline-none focus:ring-2 focus:ring-primary-500"
                 rows={2}
               />
-              <button
-                onClick={handleSendMessage}
-                disabled={!input.trim() || !apiKey || isLoading}
-                className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
-              >
-                {isLoading ? (
-                  <Loader2 className="w-5 h-5 animate-spin" />
-                ) : (
+              {isLoading ? (
+                <button
+                  onClick={handleStop}
+                  className="px-4 py-2 bg-red-600 text-white rounded-lg hover:bg-red-700 transition-colors"
+                >
+                  <X className="w-5 h-5" />
+                </button>
+              ) : (
+                <button
+                  onClick={handleSendMessage}
+                  disabled={!input.trim() || !apiKey}
+                  className="px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
                   <Send className="w-5 h-5" />
-                )}
-              </button>
+                </button>
+              )}
             </div>
           </div>
         </>
       ) : (
+        /* Network tab */
         <div className="flex-1 overflow-y-auto">
           <div className="p-3 space-y-2">
             {networkRequests.length === 0 ? (
@@ -520,33 +856,37 @@ Generate Python code using requests/bs4 or Playwright when appropriate.`
               </div>
             ) : (
               networkRequests.map((req) => {
-                const response = networkResponses.find(r => r.requestId === req.requestId);
+                const response = networkResponses.find((r) => r.requestId === req.requestId);
                 return (
                   <div key={req.requestId} className="bg-white border border-gray-200 rounded p-3 text-xs">
                     <div className="flex items-center gap-2 mb-1">
-                      <span className={`px-1.5 py-0.5 rounded font-medium ${
-                        req.method === 'GET' ? 'bg-green-100 text-green-700' :
-                        req.method === 'POST' ? 'bg-blue-100 text-blue-700' :
-                        'bg-gray-100 text-gray-700'
-                      }`}>
+                      <span
+                        className={`px-1.5 py-0.5 rounded font-medium ${
+                          req.method === "GET"
+                            ? "bg-green-100 text-green-700"
+                            : req.method === "POST"
+                              ? "bg-blue-100 text-blue-700"
+                              : "bg-gray-100 text-gray-700"
+                        }`}
+                      >
                         {req.method}
                       </span>
                       <span className="text-gray-600 truncate flex-1">{req.url}</span>
                     </div>
                     {response && (
                       <div className="flex items-center gap-2 text-gray-500">
-                        <span className={`px-1.5 py-0.5 rounded ${
-                          response.status < 300 ? 'bg-green-50 text-green-600' :
-                          response.status < 400 ? 'bg-yellow-50 text-yellow-600' :
-                          'bg-red-50 text-red-600'
-                        }`}>
+                        <span
+                          className={`px-1.5 py-0.5 rounded ${
+                            response.status < 300
+                              ? "bg-green-50 text-green-600"
+                              : response.status < 400
+                                ? "bg-yellow-50 text-yellow-600"
+                                : "bg-red-50 text-red-600"
+                          }`}
+                        >
                           {response.status}
                         </span>
-                        {response.body && (
-                          <span className="text-gray-400">
-                            {response.body.length} bytes
-                          </span>
-                        )}
+                        {response.body && <span className="text-gray-400">{response.body.length} bytes</span>}
                       </div>
                     )}
                   </div>
