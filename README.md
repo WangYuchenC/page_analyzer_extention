@@ -105,3 +105,4 @@ src/
 - 结构化页面摘要替代原始 HTML 截断，节省 LLM 上下文空间
 - 使用 Vitest + happy-dom 进行测试，Chrome API 通过 mock 模拟；测试覆盖 parseInput、参数校验、消息转换(msgToApi)、工具错误格式、工具链保留截断、Debugger 生命周期、DOM 事件等
 - Markdown 渲染引擎支持完整格式：表格、加粗、斜体、链接、标题、列表、代码块、分隔线等，使用自定义解析器实现，无外部依赖
+- 流式渲染稳定性：Markdown 解析器使用索引赋值（`arr[idx++]`）而非 `.push()` 避免 Zustand 同步重渲染触发的 minified 代码中数组长度损坏；`setMessageStreaming` 置于 `finally` 块中确保流状态清理不抛未捕获异常

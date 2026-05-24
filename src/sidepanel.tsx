@@ -396,9 +396,14 @@ function SidePanel() {
         if (assistantMsgId) {
           appendToMessage(latestStreamingId, "\n[流式响应中断: " + (streamError.message || "未知错误") + "]");
         }
+      } finally {
+        // Always clear streaming state, even if stream processing errors out
+        try {
+          setMessageStreaming(latestStreamingId, false);
+        } catch (e) {
+          errorLog('SidePanel', 'Error clearing streaming state:', e);
+        }
       }
-
-      setMessageStreaming(latestStreamingId, false);
     } catch (error: any) {
       errorLog('SidePanel', 'Error in handleSendMessage:', error);
       if (error.name === "AbortError") {

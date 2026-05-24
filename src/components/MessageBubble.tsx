@@ -107,17 +107,21 @@ function parseMarkdown(text: string): React.ReactNode[] {
   const parts: React.ReactNode[] = [];
   let remaining = text;
   let key = 0;
+  let pi = 0;
 
   const renderInlineMarkdown = (text: string): React.ReactNode[] => {
     const result: React.ReactNode[] = [];
     let remaining = text;
-    
-    while (remaining.length > 0) {
+    let ri = 0;
+    let safety = 0;
+
+    while (remaining.length > 0 && safety < 10000) {
+      safety++;
       let matched = false;
 
       const boldMatch = remaining.match(/^\*\*(.+?)\*\*/);
       if (boldMatch) {
-        result.push(<strong key={`bold-${key++}`} className="font-bold">{boldMatch[1]}</strong>);
+        result[ri++] = <strong key={`bold-${key++}`} className="font-bold">{boldMatch[1]}</strong>;
         remaining = remaining.slice(boldMatch[0].length);
         matched = true;
         continue;
@@ -125,7 +129,7 @@ function parseMarkdown(text: string): React.ReactNode[] {
 
       const italicMatch = remaining.match(/^\*(.+?)\*/);
       if (italicMatch) {
-        result.push(<em key={`italic-${key++}`} className="italic">{italicMatch[1]}</em>);
+        result[ri++] = <em key={`italic-${key++}`} className="italic">{italicMatch[1]}</em>;
         remaining = remaining.slice(italicMatch[0].length);
         matched = true;
         continue;
@@ -133,7 +137,7 @@ function parseMarkdown(text: string): React.ReactNode[] {
 
       const linkMatch = remaining.match(/^\[([^\]]+)\]\(([^)]+)\)/);
       if (linkMatch) {
-        result.push(<a key={`link-${key++}`} href={linkMatch[2]} className="text-primary-600 underline hover:text-primary-700" target="_blank" rel="noopener noreferrer">{linkMatch[1]}</a>);
+        result[ri++] = <a key={`link-${key++}`} href={linkMatch[2]} className="text-primary-600 underline hover:text-primary-700" target="_blank" rel="noopener noreferrer">{linkMatch[1]}</a>;
         remaining = remaining.slice(linkMatch[0].length);
         matched = true;
         continue;
@@ -141,7 +145,7 @@ function parseMarkdown(text: string): React.ReactNode[] {
 
       const inlineCodeMatch = remaining.match(/^`([^`]+)`/);
       if (inlineCodeMatch) {
-        result.push(<code key={`code-${key++}`} className="bg-gray-100 px-1 rounded text-primary-700 font-mono text-sm">{inlineCodeMatch[1]}</code>);
+        result[ri++] = <code key={`code-${key++}`} className="bg-gray-100 px-1 rounded text-primary-700 font-mono text-sm">{inlineCodeMatch[1]}</code>;
         remaining = remaining.slice(inlineCodeMatch[0].length);
         matched = true;
         continue;
@@ -156,10 +160,10 @@ function parseMarkdown(text: string): React.ReactNode[] {
         );
 
         if (nextSpecial === Infinity) {
-          result.push(remaining);
+          result[ri++] = remaining;
           remaining = '';
         } else {
-          result.push(remaining.slice(0, nextSpecial));
+          result[ri++] = remaining.slice(0, nextSpecial);
           remaining = remaining.slice(nextSpecial);
         }
       }
@@ -176,7 +180,7 @@ function parseMarkdown(text: string): React.ReactNode[] {
     const line = lines[i];
 
     if (line.startsWith('---') && line.trim() === '---') {
-      parts.push(<hr key={`hr-${key++}`} className="my-2 border-gray-300" />);
+      parts[pi++] = <hr key={`hr-${key++}`} className="my-2 border-gray-300" />;
       continue;
     }
 
@@ -184,7 +188,7 @@ function parseMarkdown(text: string): React.ReactNode[] {
     if (headingMatch) {
       const level = headingMatch[1].length;
       const HeadingTag = `h${Math.min(level, 6)}` as keyof JSX.IntrinsicElements;
-      parts.push(<HeadingTag key={`heading-${key++}`} className={`font-semibold mt-2 mb-1 ${level === 1 ? 'text-lg' : level === 2 ? 'text-base' : 'text-sm'}`}>{renderInlineMarkdown(headingMatch[2])}</HeadingTag>);
+      parts[pi++] = <HeadingTag key={`heading-${key++}`} className={`font-semibold mt-2 mb-1 ${level === 1 ? 'text-lg' : level === 2 ? 'text-base' : 'text-sm'}`}>{renderInlineMarkdown(headingMatch[2])}</HeadingTag>;
       continue;
     }
 
@@ -204,7 +208,7 @@ function parseMarkdown(text: string): React.ReactNode[] {
       const bodyRows = tableRows.slice(separatorRow?.match(/^[|: -]+$/) ? 2 : 1);
 
       if (headerRow) {
-        parts.push(
+        parts[pi++] =
           <table key={`table-${key++}`} className="w-full text-xs border-collapse my-2">
             <thead>
               <tr className="bg-gray-100">
@@ -226,7 +230,7 @@ function parseMarkdown(text: string): React.ReactNode[] {
               })}
             </tbody>
           </table>
-        );
+        ;
       }
       tableRows = [];
     }
@@ -236,25 +240,25 @@ function parseMarkdown(text: string): React.ReactNode[] {
       const content = renderInlineMarkdown(listMatch[3]);
       const indent = listMatch[1].length;
       if (indent === 0) {
-        parts.push(<li key={`li-${key++}`} className="ml-4 list-disc">{content}</li>);
+        parts[pi++] = <li key={`li-${key++}`} className="ml-4 list-disc">{content}</li>;
       } else if (indent < 4) {
-        parts.push(<li key={`li-${key++}`} className="ml-8 list-disc">{content}</li>);
+        parts[pi++] = <li key={`li-${key++}`} className="ml-8 list-disc">{content}</li>;
       } else {
-        parts.push(<li key={`li-${key++}`} className="ml-12 list-disc">{content}</li>);
+        parts[pi++] = <li key={`li-${key++}`} className="ml-12 list-disc">{content}</li>;
       }
       continue;
     }
 
     const numberedMatch = line.match(/^(\s*\d+\.)\s+(.+)/);
     if (numberedMatch) {
-      parts.push(<li key={`num-li-${key++}`} className="ml-4 list-decimal">{renderInlineMarkdown(numberedMatch[2])}</li>);
+      parts[pi++] = <li key={`num-li-${key++}`} className="ml-4 list-decimal">{renderInlineMarkdown(numberedMatch[2])}</li>;
       continue;
     }
 
     if (line.trim() === '') {
-      parts.push(<br key={`br-${key++}`} />);
+      parts[pi++] = <br key={`br-${key++}`} />;
     } else {
-      parts.push(<p key={`p-${key++}`} className="mb-1">{renderInlineMarkdown(line)}</p>);
+      parts[pi++] = <p key={`p-${key++}`} className="mb-1">{renderInlineMarkdown(line)}</p>;
     }
   }
 
@@ -264,7 +268,7 @@ function parseMarkdown(text: string): React.ReactNode[] {
     const bodyRows = tableRows.slice(separatorRow?.match(/^[|: -]+$/) ? 2 : 1);
 
     if (headerRow) {
-      parts.push(
+      parts[pi++] =
         <table key={`table-${key++}`} className="w-full text-xs border-collapse my-2">
           <thead>
             <tr className="bg-gray-100">
@@ -286,7 +290,7 @@ function parseMarkdown(text: string): React.ReactNode[] {
             })}
           </tbody>
         </table>
-      );
+      ;
     }
   }
 
@@ -302,12 +306,13 @@ function MessageContent({
 }) {
   const parts: React.ReactNode[] = [];
   const codeBlocks = content.split("```");
-  
+  let pi = 0;
+
   for (let i = 0; i < codeBlocks.length; i++) {
     if (i % 2 === 1) {
-      parts.push(<CodeBlock key={`code-${i}`} code={codeBlocks[i]} />);
+      parts[pi++] = <CodeBlock key={`code-${i}`} code={codeBlocks[i]} />;
     } else {
-      parts.push(<span key={`md-${i}`}>{parseMarkdown(codeBlocks[i])}</span>);
+      parts[pi++] = <span key={`md-${i}`}>{parseMarkdown(codeBlocks[i])}</span>;
     }
   }
 
