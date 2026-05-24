@@ -261,8 +261,8 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
 
     case MessageType.EXECUTE_SCRIPT:
-      if (payload?.script && sender.tab?.id) {
-        handleExecuteScript(sender.tab.id, payload.script, sendResponse);
+      if (payload?.tabId && payload?.script) {
+        handleExecuteScript(payload.tabId, payload.script, sendResponse);
         return true;
       }
       break;
@@ -440,11 +440,15 @@ async function handleSetCookie(tabId: number, payload: unknown, sendResponse: (r
 }
 
 async function handleExecuteScript(tabId: number, script: string, sendResponse: (response: unknown) => void) {
+  let needsDetach = false;
   try {
-    // Attach debugger to execute script via CDP, bypassing page CSP restrictions
-    await debuggerManager.attach(tabId);
+    // Attach debugger only if not already attached (e.g., by network monitoring)
+    if (!debuggerManager.isAttached(tabId)) {
+      needsDetach = true;
+      await debuggerManager.attach(tabId);
+    }
 
-    const raw = await chrome.debugger.sendCommand(
+    const result = await chrome.debugger.sendCommand(
       { tabId },
       'Runtime.evaluate',
       {
@@ -453,29 +457,39 @@ async function handleExecuteScript(tabId: number, script: string, sendResponse: 
         returnByValue: true,
       }
     ) as {
-      exceptionDetails?: { text?: string };
-      result?: { value?: unknown };
+      result?: { value?: unknown; objectId?: string; description?: string };
+      exceptionDetails?: { text?: string; exception?: { description?: string } };
     };
 
-    if (raw.exceptionDetails) {
+    if (result.exceptionDetails) {
+      // Script threw an error — return the exception info
       sendResponse({
         success: false,
-        error: raw.exceptionDetails.text || 'Unknown script error',
+        error: result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'Script execution error',
       });
-    } else {
-      const value = raw.result?.value;
+    } else if (result.result?.value !== undefined) {
+      // JSON-serializable value returned successfully
+      sendResponse({ success: true, result: result.result.value });
+    } else if (result.result?.objectId) {
+      // Value is not serializable (DOM node, function, etc.) — return description
       sendResponse({
         success: true,
-        result: value === undefined
-          ? 'undefined'
-          : (typeof value === 'string' ? value : JSON.stringify(value)),
+        result: result.result.description ? `[${result.result.description}]` : '[Non-serializable return value]',
       });
+    } else {
+      sendResponse({ success: true, result: null });
     }
   } catch (error) {
     sendResponse({ success: false, error: (error as Error).message });
   } finally {
-    // Always detach debugger after execution to avoid resource leaks
-    await debuggerManager.detach(tabId).catch(() => {});
+    // Only detach if we attached in this call — don't interfere with
+    // other debugger users (e.g., network monitoring)
+    if (needsDetach) {
+      try {
+        await debuggerManager.detach(tabId);
+      } catch (e) {
+        console.error('Failed to detach debugger:', e);
+      }
+    }
   }
 }
-

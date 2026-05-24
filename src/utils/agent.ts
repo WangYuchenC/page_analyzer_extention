@@ -301,7 +301,7 @@ export function createChromeTools(tabId: number) {
   const executeScriptTool = new DynamicTool({
     name: "execute_script",
     description:
-      "Execute custom JavaScript in the page context. Use this for complex operations or accessing page-specific functions. Input: JSON with \"script\" (JavaScript code to execute, required). Returns the result as JSON.",
+      "Execute custom JavaScript in the page context. Input: JSON with \"script\" (JavaScript code to execute, required). Returns the result as JSON.",
     func: async (input: string) => {
       debugLog("Tool:execute_script", "Executing with input:", input?.slice(0, 50));
       try {
@@ -310,8 +310,14 @@ export function createChromeTools(tabId: number) {
         if (validation) return JSON.stringify({ error: validation });
         const strValidation = validateString(args, ["script"]);
         if (strValidation) return JSON.stringify({ error: strValidation });
-        
-        const result = await sendMessage(MessageType.EXECUTE_SCRIPT, { tabId, ...args });
+
+        // Use CDP via background.ts to bypass page CSP (new Function() in
+        // content script would be blocked). Background handles debugger
+        // attach/detach lifecycle with proper cleanup.
+        const result = await sendMessage(MessageType.EXECUTE_SCRIPT, {
+          tabId,
+          script: args.script as string,
+        });
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:execute_script", "Error:", error);
@@ -543,7 +549,9 @@ export function toLangChainMessages(messages: ChatMessage[]): BaseMessage[] {
 
   const MAX_TOTAL_CHARS = 40000;
   const MAX_MESSAGES = 50;
-  
+  const MAX_MSG_CHARS = 5000;
+
+  // Filter out empty messages that have neither content nor tool_calls
   const validMessages = messages.filter((msg) => {
     if (!msg.content && !msg.tool_calls?.length) {
       debugLog("toLangChainMessages", `Filtering out empty message at index: ${messages.indexOf(msg)}`);
@@ -552,36 +560,40 @@ export function toLangChainMessages(messages: ChatMessage[]): BaseMessage[] {
     return true;
   });
 
-  const recentMessages = validMessages.slice(-MAX_MESSAGES);
+  // Step 1: Identify tool call chains.
+  // A chain is: AIMessage(tool_calls) → ToolMessage → maybe more ToolMessages
+  // All messages in a chain must be kept together to avoid confusing the LLM.
+  const chainGroup = new Array<number>(validMessages.length).fill(-1);
+  let groupId = 0;
+  for (let i = 0; i < validMessages.length; i++) {
+    if (validMessages[i].role === "assistant" && validMessages[i].tool_calls?.length) {
+      chainGroup[i] = groupId;
+      for (let j = i + 1; j < validMessages.length; j++) {
+        if (validMessages[j].role === "tool") {
+          chainGroup[j] = groupId;
+        } else {
+          break; // non-tool message ends the chain
+        }
+      }
+      i += validMessages.slice(i + 1).findIndex((m) => m.role !== "tool") + 1;
+      if (i < validMessages.length - 1 && validMessages[i].role !== "tool") i--; // back up
+      groupId++;
+    }
+  }
 
-  let totalChars = 0;
-  const result: BaseMessage[] = [];
-  
-  const MAX_MSG_CHARS = 5000;
-
-  for (let i = recentMessages.length - 1; i >= 0; i--) {
-    const msg = recentMessages[i];
+  // Step 2: Convert valid messages to BaseMessage format (before truncation)
+  const converted: BaseMessage[] = validMessages.map((msg) => {
     const rawContent = typeof msg.content === "string" ? msg.content : "";
     const truncatedContent = rawContent.length > MAX_MSG_CHARS
       ? rawContent.slice(0, MAX_MSG_CHARS) + `\n... [truncated ${rawContent.length - MAX_MSG_CHARS} chars]`
       : rawContent;
-    const msgChars = truncatedContent.length;
-    
-    if (totalChars + msgChars > MAX_TOTAL_CHARS && result.length > 0) {
-      debugLog("toLangChainMessages", "Context limit reached, stopping");
-      break;
-    }
-    
-    totalChars += msgChars;
-    
-    let baseMsg: BaseMessage;
+
     switch (msg.role) {
       case "user":
-        baseMsg = new HumanMessage(truncatedContent);
-        break;
+        return new HumanMessage(truncatedContent);
       case "assistant": {
         if (msg.tool_calls?.length) {
-          baseMsg = new AIMessage({
+          return new AIMessage({
             content: truncatedContent || "",
             tool_calls: msg.tool_calls.map((tc) => ({
               id: tc.id,
@@ -590,25 +602,51 @@ export function toLangChainMessages(messages: ChatMessage[]): BaseMessage[] {
               args: typeof tc.function.arguments === "string" ? JSON.parse(tc.function.arguments) : tc.function.arguments,
             })),
           });
-        } else {
-          baseMsg = new AIMessage(truncatedContent);
         }
-        break;
+        return new AIMessage(truncatedContent);
       }
       case "tool":
-        baseMsg = new ToolMessage({
+        return new ToolMessage({
           content: truncatedContent,
           tool_call_id: msg.tool_call_id!,
         });
-        break;
       case "system":
-        baseMsg = new SystemMessage(truncatedContent);
-        break;
+        return new SystemMessage(truncatedContent);
       default:
-        baseMsg = new HumanMessage(truncatedContent);
+        return new HumanMessage(truncatedContent);
     }
-    
-    result.unshift(baseMsg);
+  });
+
+  // Step 3: Apply MAX_MESSAGES limit first (keep messages from the end, respecting chains)
+  const sliced: { msg: BaseMessage; group: number }[] = [];
+  const recentStart = Math.max(0, converted.length - MAX_MESSAGES);
+  for (let i = recentStart; i < converted.length; i++) {
+    sliced.push({ msg: converted[i], group: chainGroup[i] });
+  }
+
+  // Step 4: Apply MAX_TOTAL_CHARS truncation from the front, respecting chain groups.
+  let totalChars = 0;
+  const result: BaseMessage[] = [];
+
+  for (let i = sliced.length - 1; i >= 0; i--) {
+    const { msg, group } = sliced[i];
+    const contentLen = typeof msg.content === "string" ? msg.content.length : 0;
+
+    // If this message belongs to a chain group, check if we already have any
+    // message from the same group in the result. If we do, this one must also
+    // be included to keep the chain intact.
+    const chainStarted = group >= 0 && result.some((r) => {
+      const rIdx = converted.indexOf(r);
+      return rIdx >= 0 && chainGroup[rIdx] === group;
+    });
+
+    if (totalChars + contentLen > MAX_TOTAL_CHARS && result.length > 0 && !chainStarted) {
+      debugLog("toLangChainMessages", "Context limit reached, stopping");
+      break;
+    }
+
+    totalChars += contentLen;
+    result.unshift(msg);
   }
 
   debugLog("toLangChainMessages", `Result: ${result.length} messages, ${totalChars} chars`);
@@ -659,6 +697,57 @@ function normalizeToolResponse(raw: string): string {
   return raw;
 }
 
+/**
+ * JSON-aware truncation that preserves valid JSON structure.
+ * - Arrays: keep first N items
+ * - Objects: keep first N keys
+ * - Non-JSON strings: slice with ellipsis
+ */
+function truncateToolResult(raw: string, maxChars: number): string {
+  if (raw.length <= maxChars) return raw;
+
+  const TRUNC_SUFFIX_LEN = 80; // reserve space for the truncation notice
+  const effectiveMax = maxChars - TRUNC_SUFFIX_LEN;
+
+  try {
+    const parsed = JSON.parse(raw);
+
+    // Array → keep leading items
+    if (Array.isArray(parsed) && parsed.length > 0) {
+      const kept: unknown[] = [];
+      let size = 2; // "[]"
+      for (const item of parsed) {
+        const str = JSON.stringify(item);
+        if (size + str.length + (kept.length > 0 ? 1 : 0) > effectiveMax) break;
+        kept.push(item);
+        size += str.length + (kept.length > 0 ? 1 : 0);
+      }
+      const dropped = parsed.length - kept.length;
+      return JSON.stringify(kept, null, 2) + `\n... [truncated: ${dropped} of ${parsed.length} items]`;
+    }
+
+    // Object → keep leading keys
+    if (typeof parsed === "object" && parsed !== null) {
+      const entries = Object.entries(parsed);
+      const kept: Record<string, unknown> = {};
+      let size = 2; // "{}"
+      for (const [key, val] of entries) {
+        const str = JSON.stringify({ [key]: val });
+        if (size + str.length - 1 > effectiveMax) break;
+        kept[key] = val;
+        size += str.length - 1; // -1 for reducing outer braces
+      }
+      const dropped = entries.length - Object.keys(kept).length;
+      return JSON.stringify(kept, null, 2) + `\n... [truncated: ${dropped} keys dropped]`;
+    }
+  } catch {
+    // Not valid JSON, fall through to string truncation
+  }
+
+  // Fallback: safe string truncation
+  return raw.slice(0, effectiveMax) + `\n... [truncated ${raw.length - effectiveMax} chars]`;
+}
+
 export async function executeToolCall(
   toolName: string,
   args: Record<string, unknown>,
@@ -688,7 +777,7 @@ export async function* streamAgentResponse(
   const conversationHistory: BaseMessage[] = [...history];
   const MAX_TOOL_RESULT_CHARS = 5000;
   const MAX_ITERATIONS = 15;
-  let pendingReasoningContent = false;
+  let currentInput = input;
   let iteration = 0;
 
   while (!signal.aborted) {
@@ -706,75 +795,60 @@ export async function* streamAgentResponse(
     try {
       let response: AIMessageChunk;
 
-      if (pendingReasoningContent) {
-        // DeepSeek thinking mode requires reasoning_content to be echoed back,
-        // but LangChain's @langchain/openai (v1.4.7) serializer drops
-        // additional_kwargs.reasoning_content during serialization.
-        // Bypass LangChain using raw fetch + msgToApi which preserves it.
-        infoLog("streamAgentResponse", "Using raw API path to preserve reasoning_content");
-        response = await invokeModelRaw(agent, input, conversationHistory, signal);
-        pendingReasoningContent = false;
-        // invokeModelRaw is non-streaming, yield its content to the UI
-        if (response.content) {
-          yield { type: "content", data: String(response.content) };
-        }
-      } else {
-        const messages: BaseMessage[] = [
-          new SystemMessage(agent.systemPrompt),
-          ...conversationHistory,
-        ];
-        if (input.trim()) {
-          messages.push(new HumanMessage(input));
-        }
-
-        infoLog("streamAgentResponse", "=== Sending to LLM ===");
-        infoLog("streamAgentResponse", `Total messages: ${messages.length}`);
-        infoLog("streamAgentResponse", `System prompt length: ${agent.systemPrompt.length} chars`);
-        infoLog("streamAgentResponse", `History messages: ${conversationHistory.length}`);
-        infoLog("streamAgentResponse", `Current input: "${input.slice(0, 100)}${input.length > 100 ? "..." : ""}"`);
-
-        messages.forEach((msg, index) => {
-          const type = msg._getType();
-          const contentPreview = typeof msg.content === "string"
-            ? msg.content.slice(0, 150) + (msg.content.length > 150 ? "..." : "")
-            : JSON.stringify(msg.content).slice(0, 150) + "...";
-          infoLog("streamAgentResponse", `Message ${index} [${type}]: ${contentPreview}`);
-        });
-
-        const totalChars = messages.reduce((acc, msg) => {
-          if (typeof msg.content === "string") return acc + msg.content.length;
-          return acc + JSON.stringify(msg.content).length;
-        }, 0);
-        infoLog("streamAgentResponse", `Total content length: ${totalChars} chars (~${Math.floor(totalChars / 4)} tokens)`);
-        infoLog("streamAgentResponse", "=== End LLM input ===");
-
-        // Use streaming for real-time token delivery
-        const llmStream = await agent.model.stream(messages, { signal });
-        // Accumulate via concat() which properly merges tool_call_chunks
-        // and additional_kwargs across multiple stream chunks
-        let accumulated = new AIMessageChunk({ content: "" });
-
-        for await (const chunk of llmStream) {
-          if (signal.aborted) break;
-
-          accumulated = accumulated.concat(chunk);
-
-          if (chunk.content) {
-            yield { type: "content", data: String(chunk.content) };
-          }
-        }
-
-        response = accumulated;
+      const messages: BaseMessage[] = [
+        new SystemMessage(agent.systemPrompt),
+        ...conversationHistory,
+      ];
+      if (currentInput.trim()) {
+        messages.push(new HumanMessage(currentInput));
       }
 
-      // Preserve reasoning_content flag for DeepSeek thinking mode
-      const rc = (response.additional_kwargs as Record<string, unknown>)?.reasoning_content;
-      if (typeof rc === "string" && response.tool_calls?.length) {
-        pendingReasoningContent = true;
+      infoLog("streamAgentResponse", "=== Sending to LLM ===");
+      infoLog("streamAgentResponse", `Total messages: ${messages.length}`);
+      infoLog("streamAgentResponse", `System prompt length: ${agent.systemPrompt.length} chars`);
+      infoLog("streamAgentResponse", `History messages: ${conversationHistory.length}`);
+      infoLog("streamAgentResponse", `Current input: "${currentInput.slice(0, 100)}${currentInput.length > 100 ? "..." : ""}"`);
+
+      messages.forEach((msg, index) => {
+        const type = msg._getType();
+        const contentPreview = typeof msg.content === "string"
+          ? msg.content.slice(0, 150) + (msg.content.length > 150 ? "..." : "")
+          : JSON.stringify(msg.content).slice(0, 150) + "...";
+        infoLog("streamAgentResponse", `Message ${index} [${type}]: ${contentPreview}`);
+      });
+
+      const totalChars = messages.reduce((acc, msg) => {
+        if (typeof msg.content === "string") return acc + msg.content.length;
+        return acc + JSON.stringify(msg.content).length;
+      }, 0);
+      infoLog("streamAgentResponse", `Total content length: ${totalChars} chars (~${Math.floor(totalChars / 4)} tokens)`);
+      infoLog("streamAgentResponse", "=== End LLM input ===");
+
+      // Use streaming for real-time token delivery
+      const llmStream = await agent.model.stream(messages, { signal });
+      // Accumulate via concat() which properly merges tool_call_chunks
+      // and additional_kwargs across multiple stream chunks
+      let accumulated = new AIMessageChunk({ content: "" });
+
+      for await (const chunk of llmStream) {
+        if (signal.aborted) break;
+
+        accumulated = accumulated.concat(chunk);
+
+        // Yield reasoning_content from DeepSeek thinking mode during streaming
+        const reasoning = (chunk.additional_kwargs as Record<string, unknown>)?.reasoning_content;
+        if (reasoning) {
+          yield { type: "content", data: `\n[思考过程]\n${reasoning}\n[/思考过程]\n` };
+        }
+        if (chunk.content) {
+          yield { type: "content", data: String(chunk.content) };
+        }
       }
 
-      if (input.trim()) {
-        conversationHistory.push(new HumanMessage(input));
+      response = accumulated;
+
+      if (currentInput.trim()) {
+        conversationHistory.push(new HumanMessage(currentInput));
       }
       conversationHistory.push(response);
 
@@ -801,9 +875,7 @@ export async function* streamAgentResponse(
             toolStatus = "error";
             toolError = (error as Error).message;
           }
-          const truncated = rawResult.length > MAX_TOOL_RESULT_CHARS
-            ? rawResult.slice(0, MAX_TOOL_RESULT_CHARS) + `\n... [truncated ${rawResult.length - MAX_TOOL_RESULT_CHARS} chars]`
-            : rawResult;
+          const truncated = truncateToolResult(rawResult, MAX_TOOL_RESULT_CHARS);
           toolMessages.push(
             new ToolMessage({
               content: truncated,
@@ -822,7 +894,16 @@ export async function* streamAgentResponse(
         }
 
         conversationHistory.push(...toolMessages);
-        input = "";
+        currentInput = ""; // clear input, next iteration uses history only
+
+        // Prevent unbounded growth: keep only the most recent messages
+        // (tool call chains at the end are naturally preserved by slicing from front)
+        const MAX_CONVERSATION_HISTORY = 60;
+        if (conversationHistory.length > MAX_CONVERSATION_HISTORY) {
+          const excess = conversationHistory.length - MAX_CONVERSATION_HISTORY;
+          conversationHistory.splice(0, excess);
+          debugLog("streamAgentResponse", `Trimmed ${excess} messages from conversation history`);
+        }
       } else {
         // Content already streamed chunk-by-chunk above
         yield { type: "finish", data: [] };
@@ -1029,17 +1110,39 @@ async function invokeModelRaw(
   });
 }
 
-function msgToApi(msg: BaseMessage): Record<string, unknown> {
+/**
+ * Convert LangChain message content (possibly complex arrays with image_url etc.)
+ * to OpenAI-compatible format.
+ */
+function convertContent(content: unknown): unknown {
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((item) => {
+      if (typeof item === "string") return { type: "text", text: item };
+      if (typeof item === "object" && item !== null) {
+        if ("image_url" in item) {
+          return {
+            type: "image_url",
+            image_url:
+              typeof item.image_url === "string"
+                ? { url: item.image_url }
+                : item.image_url,
+          };
+        }
+        return item;
+      }
+      return String(item);
+    });
+  }
+  return String(content);
+}
+
+export function msgToApi(msg: BaseMessage): Record<string, unknown> {
   const type = msg._getType();
   debugLog("msgToApi", "Converting message type:", type);
 
-  if (type === "system") return { role: "system", content: msg.content };
-  if (type === "human") {
-    if (typeof msg.content !== "string" && Array.isArray(msg.content)) {
-      return { role: "user", content: msg.content };
-    }
-    return { role: "user", content: msg.content };
-  }
+  if (type === "system") return { role: "system", content: convertContent(msg.content) };
+  if (type === "human") return { role: "user", content: convertContent(msg.content) };
   if (type === "ai") {
     const ai = msg as AIMessage;
     const entry: Record<string, unknown> = { role: "assistant", content: ai.content || null };
@@ -1060,7 +1163,7 @@ function msgToApi(msg: BaseMessage): Record<string, unknown> {
   if (type === "tool") {
     return { role: "tool", tool_call_id: (msg as ToolMessage).tool_call_id, content: msg.content };
   }
-  return { role: "user", content: msg.content };
+  return { role: "user", content: convertContent(msg.content) };
 }
 
 export async function* streamFollowUp(

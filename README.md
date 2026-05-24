@@ -73,16 +73,16 @@ pnpm test:watch
 
 ```
 src/
-├── background.ts       # Service Worker: 消息路由, Debugger 管理, 截图, 导航(事件驱动等待)/Cookie管理
-├── content.ts          # Content Script: 元素选取器, CSS 查询, 全文搜索, 页面交互工具
+├── background.ts       # Service Worker: 消息路由, Debugger 管理, 截图/HTML获取, 导航, Cookie管理, CDP Runtime.evaluate执行脚本(绕过CSP)
+├── content.ts          # Content Script: 元素选取器, CSS查询, 全文搜索, 页面交互(点击/输入/滚动/悬停/等待)
 ├── sidepanel.tsx       # 侧边栏 UI (多会话管理, 流式聊天 + 网络请求)
 ├── style.css           # 全局样式 + Tailwind
 ├── types/index.ts      # TypeScript 类型定义
 ├── store/app-store.ts  # Zustand 状态管理 (API Key 加密持久化, 多会话)
 ├── components/         # UI 组件 (MessageBubble, ChatInput, NetworkTab)
 └── utils/
-    ├── agent.ts        # LangChain Agent 集成 (18个工具, 工具调用循环, 最大15次迭代防无限循环, 工具状态实时推送, 上下文截断保护, invokeModelRaw非流式回退)
-    ├── messaging.ts    # 消息传递工具 (含 content script 自动注入 + 300ms 初始化等待)
+    ├── agent.ts        # LangChain Agent (18工具, 工具调用循环+15次上限, 工具链保留截断, JSON感知截断, reasoning_content流式, 复杂内容转换 msgToApi, 60条对话历史上限)
+    ├── messaging.ts    # 消息传递 (content script 自动注入+300ms初始化, 30秒超时保护)
     ├── crypto.ts       # Web Crypto API AES-GCM 加密
     ├── logger.ts       # 结构化日志 (debug/info/warn/error)
     └── tools.ts        # 系统提示构建
@@ -93,15 +93,15 @@ src/
 ## 技术细节
 
 - 无 `popup.tsx` — 点击图标直接打开 Chrome 侧边栏
-- 使用 LangChain `ChatOpenAI` 流式调用 LLM API，支持自定义 Base URL 和模型；follow-up 请求使用原生 `fetch` + SSE；`invokeModelRaw` 非流式回退用于 DeepSeek 推理模式（保持 `reasoning_content` 传递），内容在返回后主动 yield 以保证 UI 渲染；`invokeModelRaw` 为全部 18 个工具定义了完整 JSON Schema 参数定义（修复之前空 `properties: {}` 导致推理模型无法正确传参的问题）
+- 使用 LangChain `ChatOpenAI` 流式调用 LLM API，支持自定义 Base URL 和模型；follow-up 请求使用原生 `fetch` + SSE；`invokeModelRaw` 为全部 18 个工具定义了完整 JSON Schema 参数定义（修复之前空 `properties: {}` 导致推理模型无法正确传参的问题）；`msgToApi` 导出并使用 `convertContent` 处理复杂内容类型（`image_url` 等转 OpenAI 格式）
 - LLM 可主动调用 18 种工具进行页面分析和交互，所有工具均已添加参数验证；自动处理 LangChain DynamicTool 的 `{input: "..."}` 参数包裹问题（仅当值以 `{` 或 `[` 开头时才解包，避免误判 `{input: "hello"}` 等合法参数）
-- `execute_script` 通过 CDP `Runtime.evaluate` 执行任意 JavaScript 绕过 CSP；执行完成后通过 `finally` 块自动 detach Debugger 防止资源泄漏
+- `execute_script` 通过 `sendMessage` 发送到 background.ts，使用 CDP `Runtime.evaluate` 绕过 CSP；Debugger 生命周期通过 `needsDetach` 标志管理（仅在我们 attach 时才 detach），`finally` 块保证资源释放；`returnByValue: true` 返回 JSON 序列化结果
 - `input_text` 额外分发 `change` 和 `blur` 事件以兼容 React/Vue 等现代框架和表单验证库；submit 行为改为查找最近 form 元素提交
-- 工具调用错误格式统一：`{success: false, error: ...}` 和 `{error: ...}` 两种格式自动归一化
+- 工具调用错误格式统一：`{success: false, error: ...}` 和 `{error: ...}` 两种格式自动归一化；工具结果截断使用 JSON 感知的 `truncateToolResult`（数组保留前 N 项，对象保留前 K 个 key）
 - 消息传递基于 `chrome.runtime` API，类型安全的枚举派发，错误信息正确解析；所有消息发送均包含 30 秒超时保护（`Promise.race`）防止 content script 无响应时永久挂起
-- 双层上下文保护：`toLangChainMessages` 对存储消息做单条 5k / 总量 40k 截断；`streamAgentResponse` 循环内对工具结果做 5k 截断并跳过空 HumanMessage
-- 兼容 DeepSeek 等深度推理模型，自动处理 `reasoning_content` 字段
+- 三层上下文保护：`toLangChainMessages` 对存储消息做工具链保留截断（单条 5k / 总量 40k / 最多 50 条）；`streamAgentResponse` 循环内对工具结果做 5k 截断（JSON 感知）并跳过空 HumanMessage；conversationHistory 限制 60 条防止无限增长
+- 兼容 DeepSeek 等深度推理模型，`reasoning_content` 在流式 chunk 中实时捕获并作为 `[思考过程]...[/思考过程]` 输出，无需非流式回退
 - 持久化存储包括：API Key (AES-GCM 加密) / Base URL / Model / Temperature / 聊天记录，支持跨会话保留
 - 结构化页面摘要替代原始 HTML 截断，节省 LLM 上下文空间
-- 使用 Vitest + happy-dom 进行测试，Chrome API 通过 mock 模拟；测试覆盖 parseInput、参数校验、消息转换、工具错误格式、Debugger 生命周期、DOM 事件等
+- 使用 Vitest + happy-dom 进行测试，Chrome API 通过 mock 模拟；测试覆盖 parseInput、参数校验、消息转换(msgToApi)、工具错误格式、工具链保留截断、Debugger 生命周期、DOM 事件等
 - Markdown 渲染引擎支持完整格式：表格、加粗、斜体、链接、标题、列表、代码块、分隔线等，使用自定义解析器实现，无外部依赖
