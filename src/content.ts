@@ -407,27 +407,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
     }
 
-    case MessageType.EXECUTE_SCRIPT: {
-      const { script } = payload || {};
-      debugLog('ContentScript', 'Execute script:', script?.slice(0, 50));
-      (async () => {
-        try {
-          if (!script || typeof script !== 'string') {
-            sendResponse({ success: false, error: 'Script is required' });
-            return;
-          }
-          
-          const result = await (new Function(`return (async () => {\n${script}\n})()`))();
-          sendResponse({ success: true, result: typeof result === 'string' ? result : JSON.stringify(result) });
-        } catch (e) {
-          errorLog('ContentScript', 'Execute script error:', e);
-          sendResponse({ success: false, error: `Script error: ${(e as Error).message}` });
-        }
-      })();
-      return true;
-    }
-
-    // 原有消息类型继续处理
     case MessageType.ELEMENT_HIGHLIGHT:
       if (payload?.active) {
         picker.activate((elementInfo) => {

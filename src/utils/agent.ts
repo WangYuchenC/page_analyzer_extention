@@ -301,10 +301,7 @@ export function createChromeTools(tabId: number) {
         const strValidation = validateString(args, ["script"]);
         if (strValidation) return JSON.stringify({ error: strValidation });
         
-        const result = await sendToContentScript(tabId, {
-          type: MessageType.EXECUTE_SCRIPT,
-          payload: args,
-        });
+        const result = await sendMessage(MessageType.EXECUTE_SCRIPT, { tabId, ...args });
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:execute_script", "Error:", error);

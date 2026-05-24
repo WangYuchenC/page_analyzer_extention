@@ -260,6 +260,13 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       }
       break;
 
+    case MessageType.EXECUTE_SCRIPT:
+      if (payload?.script && sender.tab?.id) {
+        handleExecuteScript(sender.tab.id, payload.script, sendResponse);
+        return true;
+      }
+      break;
+
     default:
       break;
   }
@@ -427,6 +434,43 @@ async function handleSetCookie(tabId: number, payload: unknown, sendResponse: (r
 
     await chrome.cookies.set(cookieDetails);
     sendResponse({ success: true, message: `Cookie set: ${name}=${value}` });
+  } catch (error) {
+    sendResponse({ success: false, error: (error as Error).message });
+  }
+}
+
+async function handleExecuteScript(tabId: number, script: string, sendResponse: (response: unknown) => void) {
+  try {
+    // Attach debugger to execute script via CDP, bypassing page CSP restrictions
+    await debuggerManager.attach(tabId);
+
+    const raw = await chrome.debugger.sendCommand(
+      { tabId },
+      'Runtime.evaluate',
+      {
+        expression: `(async function(){${script}})()`,
+        awaitPromise: true,
+        returnByValue: true,
+      }
+    ) as {
+      exceptionDetails?: { text?: string };
+      result?: { value?: unknown };
+    };
+
+    if (raw.exceptionDetails) {
+      sendResponse({
+        success: false,
+        error: raw.exceptionDetails.text || 'Unknown script error',
+      });
+    } else {
+      const value = raw.result?.value;
+      sendResponse({
+        success: true,
+        result: value === undefined
+          ? 'undefined'
+          : (typeof value === 'string' ? value : JSON.stringify(value)),
+      });
+    }
   } catch (error) {
     sendResponse({ success: false, error: (error as Error).message });
   }
