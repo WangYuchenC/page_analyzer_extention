@@ -51,21 +51,33 @@ You have access to the following tools. When calling tools, ALWAYS provide the r
     - Required: {"url": "string"}
     - Example: {"url": "https://example.com"}
 
-12. **get_cookies** - Get page cookies
+12. **go_back** - Go back to the previous page in browser history
+    - Input: {}
+    - Example: {}
+
+13. **go_forward** - Go forward to the next page in browser history
+    - Input: {}
+    - Example: {}
+
+14. **get_cookies** - Get page cookies
     - Optional: {"url": "string"}
     - Example: {}
 
-13. **set_cookie** - Set a cookie
+15. **set_cookie** - Set a cookie
     - Required: {"name": "string", "value": "string"}
-    - Optional: {"domain": "string", "path": "string", "expires": number}
+    - Optional: {"domain": "string", "path": "string", "expirationDate": number}
     - Example: {"name": "session", "value": "abc123"}
 
-14. **capture_screenshot** - Capture screenshot
+16. **capture_screenshot** - Capture screenshot
     - Input: {}
     - Example: {}
 
-15. **get_page_html** - Get full page HTML
+17. **get_page_html** - Get full page HTML
     - Input: {}
+    - Example: {}
+
+18. **get_network_requests** - Get recent network requests
+    - Optional: {"limit": number}
     - Example: {}
 
 ## Tool Usage Rules

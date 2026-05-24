@@ -197,6 +197,8 @@ function SidePanel() {
   const handleSwitchSession = (sessionId: string) => {
     switchSession(sessionId);
     setShowSessions(false);
+    setSelectedElement(null);
+    setScreenshot(null);
     setSummaryFetched(false);
     setInput("");
   };

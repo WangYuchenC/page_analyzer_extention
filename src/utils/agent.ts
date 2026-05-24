@@ -325,10 +325,7 @@ export function createChromeTools(tabId: number) {
         const strValidation = validateString(args, ["url"]);
         if (strValidation) return JSON.stringify({ error: strValidation });
         
-        const result = await sendToContentScript(tabId, {
-          type: MessageType.NAVIGATE,
-          payload: args,
-        });
+        const result = await sendMessage(MessageType.NAVIGATE, args);
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:navigate", "Error:", error);
@@ -344,10 +341,7 @@ export function createChromeTools(tabId: number) {
     func: async () => {
       debugLog("Tool:go_back", "Executing");
       try {
-        const result = await sendToContentScript(tabId, {
-          type: MessageType.GO_BACK,
-          payload: {},
-        });
+        const result = await sendMessage(MessageType.GO_BACK, {});
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:go_back", "Error:", error);
@@ -363,10 +357,7 @@ export function createChromeTools(tabId: number) {
     func: async () => {
       debugLog("Tool:go_forward", "Executing");
       try {
-        const result = await sendToContentScript(tabId, {
-          type: MessageType.GO_FORWARD,
-          payload: {},
-        });
+        const result = await sendMessage(MessageType.GO_FORWARD, {});
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:go_forward", "Error:", error);
@@ -386,10 +377,7 @@ export function createChromeTools(tabId: number) {
         const strValidation = validateString(args, ["url"]);
         if (strValidation) return JSON.stringify({ error: strValidation });
         
-        const result = await sendToContentScript(tabId, {
-          type: MessageType.GET_COOKIES,
-          payload: args,
-        });
+        const result = await sendMessage(MessageType.GET_COOKIES, args);
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:get_cookies", "Error:", error);
@@ -410,11 +398,8 @@ export function createChromeTools(tabId: number) {
         if (validation) return JSON.stringify({ error: validation });
         const strValidation = validateString(args, ["name", "value", "url", "domain", "path"]);
         if (strValidation) return JSON.stringify({ error: strValidation });
-        
-        const result = await sendToContentScript(tabId, {
-          type: MessageType.SET_COOKIE,
-          payload: args,
-        });
+
+        const result = await sendMessage(MessageType.SET_COOKIE, args);
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:set_cookie", "Error:", error);
@@ -446,17 +431,7 @@ export function createChromeTools(tabId: number) {
     func: async () => {
       debugLog("Tool:get_page_html", "Executing");
       try {
-        const [tab] = await chrome.tabs.query({ active: true, currentWindow: true });
-        if (!tab?.id) {
-          return JSON.stringify({ error: "No active tab found" });
-        }
-        if (tab.url?.startsWith("chrome://")) {
-          return JSON.stringify({ error: "Cannot access chrome:// URLs. Please use this tool on a regular web page." });
-        }
-        const result = await sendToContentScript(tab.id, {
-          type: MessageType.GET_PAGE_HTML,
-          payload: {},
-        });
+        const result = await sendMessage(MessageType.GET_PAGE_HTML, { tabId });
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:get_page_html", "Error:", error);
@@ -476,7 +451,7 @@ export function createChromeTools(tabId: number) {
         const numValidation = validateNumber(args, ["limit"]);
         if (numValidation) return JSON.stringify({ error: numValidation });
         
-        const result = await sendMessage(MessageType.DEBUGGER_ATTACH, { ...args, getRequests: true });
+        const result = await sendMessage(MessageType.DEBUGGER_ATTACH, { tabId, ...args, getRequests: true });
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:get_network_requests", "Error:", error);
@@ -520,13 +495,16 @@ export function createChatModel(apiKey: string, baseUrl: string, model: string, 
 
 import type { Runnable } from "@langchain/core/runnables";
 import type { BaseLanguageModelInput } from "@langchain/core/language_models/base";
-import type { AIMessageChunk } from "@langchain/core/messages";
+import { AIMessageChunk } from "@langchain/core/messages";
 
 export interface AgentConfig {
   model: Runnable<BaseLanguageModelInput, AIMessageChunk>;
   tools: ReturnType<typeof createChromeTools>;
   systemPrompt: string;
   tabId: number;
+  apiKey: string;
+  baseUrl: string;
+  modelName: string;
 }
 
 export function createAgentForTab(
@@ -547,6 +525,9 @@ export function createAgentForTab(
     tools,
     systemPrompt,
     tabId,
+    apiKey,
+    baseUrl: baseUrl || "https://api.openai.com/v1",
+    modelName: model,
   };
 }
 
@@ -659,39 +640,59 @@ export async function* streamAgentResponse(
 
   const conversationHistory: BaseMessage[] = [...history];
   const MAX_TOOL_RESULT_CHARS = 5000;
+  let pendingReasoningContent = false;
 
   while (!signal.aborted) {
     try {
-      const messages: BaseMessage[] = [
-        new SystemMessage(agent.systemPrompt),
-        ...conversationHistory,
-      ];
-      if (input.trim()) {
-        messages.push(new HumanMessage(input));
+      let response: AIMessageChunk;
+
+      if (pendingReasoningContent) {
+        // DeepSeek thinking mode requires reasoning_content to be echoed back,
+        // but LangChain's @langchain/openai (v1.4.7) serializer drops
+        // additional_kwargs.reasoning_content during serialization.
+        // Bypass LangChain using raw fetch + msgToApi which preserves it.
+        infoLog("streamAgentResponse", "Using raw API path to preserve reasoning_content");
+        response = await invokeModelRaw(agent, input, conversationHistory, signal);
+        pendingReasoningContent = false;
+      } else {
+        const messages: BaseMessage[] = [
+          new SystemMessage(agent.systemPrompt),
+          ...conversationHistory,
+        ];
+        if (input.trim()) {
+          messages.push(new HumanMessage(input));
+        }
+
+        infoLog("streamAgentResponse", "=== Sending to LLM ===");
+        infoLog("streamAgentResponse", `Total messages: ${messages.length}`);
+        infoLog("streamAgentResponse", `System prompt length: ${agent.systemPrompt.length} chars`);
+        infoLog("streamAgentResponse", `History messages: ${conversationHistory.length}`);
+        infoLog("streamAgentResponse", `Current input: "${input.slice(0, 100)}${input.length > 100 ? "..." : ""}"`);
+
+        messages.forEach((msg, index) => {
+          const type = msg._getType();
+          const contentPreview = typeof msg.content === "string"
+            ? msg.content.slice(0, 150) + (msg.content.length > 150 ? "..." : "")
+            : JSON.stringify(msg.content).slice(0, 150) + "...";
+          infoLog("streamAgentResponse", `Message ${index} [${type}]: ${contentPreview}`);
+        });
+
+        const totalChars = messages.reduce((acc, msg) => {
+          if (typeof msg.content === "string") return acc + msg.content.length;
+          return acc + JSON.stringify(msg.content).length;
+        }, 0);
+        infoLog("streamAgentResponse", `Total content length: ${totalChars} chars (~${Math.floor(totalChars / 4)} tokens)`);
+        infoLog("streamAgentResponse", "=== End LLM input ===");
+
+        response = await agent.model.invoke(messages, { signal });
       }
 
-      infoLog("streamAgentResponse", "=== Sending to LLM ===");
-      infoLog("streamAgentResponse", `Total messages: ${messages.length}`);
-      infoLog("streamAgentResponse", `System prompt length: ${agent.systemPrompt.length} chars`);
-      infoLog("streamAgentResponse", `History messages: ${conversationHistory.length}`);
-      infoLog("streamAgentResponse", `Current input: "${input.slice(0, 100)}${input.length > 100 ? "..." : ""}"`);
+      // Preserve reasoning_content flag for next iteration
+      const rc = (response.additional_kwargs as Record<string, unknown>)?.reasoning_content;
+      if (typeof rc === "string" && response.tool_calls?.length) {
+        pendingReasoningContent = true;
+      }
 
-      messages.forEach((msg, index) => {
-        const type = msg._getType();
-        const contentPreview = typeof msg.content === "string"
-          ? msg.content.slice(0, 150) + (msg.content.length > 150 ? "..." : "")
-          : JSON.stringify(msg.content).slice(0, 150) + "...";
-        infoLog("streamAgentResponse", `Message ${index} [${type}]: ${contentPreview}`);
-      });
-
-      const totalChars = messages.reduce((acc, msg) => {
-        if (typeof msg.content === "string") return acc + msg.content.length;
-        return acc + JSON.stringify(msg.content).length;
-      }, 0);
-      infoLog("streamAgentResponse", `Total content length: ${totalChars} chars (~${Math.floor(totalChars / 4)} tokens)`);
-      infoLog("streamAgentResponse", "=== End LLM input ===");
-
-      const response = await agent.model.invoke(messages, { signal });
       if (input.trim()) {
         conversationHistory.push(new HumanMessage(input));
       }
@@ -711,7 +712,6 @@ export async function* streamAgentResponse(
         for (const toolCall of response.tool_calls) {
           const args = typeof toolCall.args === "string" ? JSON.parse(toolCall.args) : (toolCall.args || {});
           const rawResult = await executeToolCall(toolCall.name, args, agent.tools);
-          // Truncate large tool results to prevent context explosion
           const truncated = rawResult.length > MAX_TOOL_RESULT_CHARS
             ? rawResult.slice(0, MAX_TOOL_RESULT_CHARS) + `\n... [truncated ${rawResult.length - MAX_TOOL_RESULT_CHARS} chars]`
             : rawResult;
@@ -739,6 +739,81 @@ export async function* streamAgentResponse(
   }
 
   infoLog("streamAgentResponse", "Agent stream complete");
+}
+
+async function invokeModelRaw(
+  agent: AgentConfig,
+  input: string,
+  conversationHistory: BaseMessage[],
+  signal: AbortSignal
+): Promise<AIMessageChunk> {
+  const apiMessages: Record<string, unknown>[] = [
+    { role: "system", content: agent.systemPrompt },
+  ];
+  for (const msg of conversationHistory) {
+    apiMessages.push(msgToApi(msg));
+  }
+  if (input.trim()) {
+    apiMessages.push({ role: "user", content: input });
+  }
+
+  const normalizedBase = agent.baseUrl.replace(/\/+$/, "");
+  const endpoint = normalizedBase.endsWith("/chat/completions")
+    ? normalizedBase
+    : normalizedBase + "/chat/completions";
+
+  const tools = agent.tools.map((tool) => ({
+    type: "function" as const,
+    function: {
+      name: tool.name,
+      description: tool.description,
+      parameters: { type: "object", properties: {} as Record<string, unknown> },
+    },
+  }));
+
+  const res = await fetch(endpoint, {
+    method: "POST",
+    headers: {
+      "Content-Type": "application/json",
+      Authorization: `Bearer ${agent.apiKey}`,
+    },
+    body: JSON.stringify({
+      model: agent.modelName,
+      messages: apiMessages,
+      tools,
+      tool_choice: "auto",
+      stream: false,
+    }),
+    signal,
+  });
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    throw new Error(`API error: ${res.status} ${body}`);
+  }
+
+  const data = await res.json();
+  const choice = data.choices?.[0];
+  if (!choice) throw new Error("API response missing choices");
+
+  const message = choice.message || {};
+  const additionalKwargs: Record<string, unknown> = {};
+  if (message.reasoning_content) {
+    additionalKwargs.reasoning_content = message.reasoning_content;
+  }
+
+  const toolCalls = message.tool_calls?.map((tc: { id: string; function?: { name: string; arguments: string } }) => ({
+    id: tc.id,
+    type: "tool_call" as const,
+    name: tc.function?.name,
+    args: tc.function?.arguments ? JSON.parse(tc.function.arguments) : {},
+  })) || [];
+
+  return new AIMessageChunk({
+    content: message.content || "",
+    additional_kwargs: additionalKwargs,
+    tool_calls: toolCalls,
+  });
 }
 
 function msgToApi(msg: BaseMessage): Record<string, unknown> {
@@ -788,6 +863,7 @@ export async function* streamFollowUp(
 
   const apiMessages: Record<string, unknown>[] = [];
   for (const m of history) apiMessages.push(msgToApi(m));
+  if (assistantMsg) apiMessages.push(msgToApi(assistantMsg));
   for (const m of toolMsgs) apiMessages.push(msgToApi(m));
 
   debugLog("streamFollowUp", "API messages prepared:", apiMessages.length, "messages");

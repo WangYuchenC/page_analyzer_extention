@@ -20,6 +20,12 @@ interface AppState {
   setMessageStreaming: (id: string, isStreaming: boolean) => void;
   clearMessages: () => void;
 
+  // Session-scoped chat operations (for race-condition-safe async writes)
+  addMessageToSession: (sessionId: string, message: ChatMessage) => void;
+  updateMessageInSession: (sessionId: string, id: string, updates: Partial<ChatMessage>) => void;
+  appendToMessageInSession: (sessionId: string, id: string, chunk: string) => void;
+  setMessageStreamingInSession: (sessionId: string, id: string, isStreaming: boolean) => void;
+
   // Element
   selectedElement: ElementInfo | null;
   setSelectedElement: (element: ElementInfo | null) => void;
@@ -148,8 +154,14 @@ export const useAppStore = create<AppState>()(
       messages: [],
 
       addMessage: (message) => {
+        const sessionId = get().currentSessionId;
+        if (sessionId) get().addMessageToSession(sessionId, message);
+      },
+
+      addMessageToSession: (sessionId, message) => {
         set((state) => {
-          const sessionIndex = state.sessions.findIndex(s => s.id === state.currentSessionId);
+          if (state.currentSessionId !== sessionId) return state;
+          const sessionIndex = state.sessions.findIndex(s => s.id === sessionId);
           if (sessionIndex === -1) return state;
           const sessions = [...state.sessions];
           sessions[sessionIndex] = {
@@ -166,8 +178,14 @@ export const useAppStore = create<AppState>()(
       },
 
       updateMessage: (id, updates) => {
+        const sessionId = get().currentSessionId;
+        if (sessionId) get().updateMessageInSession(sessionId, id, updates);
+      },
+
+      updateMessageInSession: (sessionId, id, updates) => {
         set((state) => {
-          const sessionIndex = state.sessions.findIndex(s => s.id === state.currentSessionId);
+          if (state.currentSessionId !== sessionId) return state;
+          const sessionIndex = state.sessions.findIndex(s => s.id === sessionId);
           if (sessionIndex === -1) return state;
           const sessions = [...state.sessions];
           sessions[sessionIndex] = {
@@ -182,8 +200,14 @@ export const useAppStore = create<AppState>()(
       },
 
       appendToMessage: (id, chunk) => {
+        const sessionId = get().currentSessionId;
+        if (sessionId) get().appendToMessageInSession(sessionId, id, chunk);
+      },
+
+      appendToMessageInSession: (sessionId, id, chunk) => {
         set((state) => {
-          const sessionIndex = state.sessions.findIndex(s => s.id === state.currentSessionId);
+          if (state.currentSessionId !== sessionId) return state;
+          const sessionIndex = state.sessions.findIndex(s => s.id === sessionId);
           if (sessionIndex === -1) return state;
           const sessions = [...state.sessions];
           sessions[sessionIndex] = {
@@ -198,8 +222,14 @@ export const useAppStore = create<AppState>()(
       },
 
       setMessageStreaming: (id, isStreaming) => {
+        const sessionId = get().currentSessionId;
+        if (sessionId) get().setMessageStreamingInSession(sessionId, id, isStreaming);
+      },
+
+      setMessageStreamingInSession: (sessionId, id, isStreaming) => {
         set((state) => {
-          const sessionIndex = state.sessions.findIndex(s => s.id === state.currentSessionId);
+          if (state.currentSessionId !== sessionId) return state;
+          const sessionIndex = state.sessions.findIndex(s => s.id === sessionId);
           if (sessionIndex === -1) return state;
           const sessions = [...state.sessions];
           sessions[sessionIndex] = {

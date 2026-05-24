@@ -182,20 +182,35 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       return true;
 
     case MessageType.GET_PAGE_HTML:
+      if (payload?.tabId) {
+        handleGetPageHTML(payload.tabId, sendResponse);
+        return true;
+      }
       if (sender.tab?.id) {
         handleGetPageHTML(sender.tab.id, sendResponse);
         return true;
       }
       break;
 
-    case MessageType.DEBUGGER_ATTACH:
-      if (payload.tabId) {
-        debuggerManager.attach(payload.tabId)
-          .then(() => sendResponse({ success: true }))
+    case MessageType.DEBUGGER_ATTACH: {
+      const targetTabId = payload.tabId || sender.tab?.id;
+      if (targetTabId) {
+        debuggerManager.attach(targetTabId)
+          .then(async () => {
+            if (payload.getRequests) {
+              const requests = debuggerManager.getNetworkRequests(targetTabId);
+              const responses = debuggerManager.getNetworkResponses(targetTabId);
+              sendResponse({ success: true, requests, responses });
+            } else {
+              sendResponse({ success: true });
+            }
+          })
           .catch((error) => sendResponse({ success: false, error: error.message }));
         return true;
       }
-      break;
+      sendResponse({ success: false, error: 'No tab ID available' });
+      return true;
+    }
 
     case MessageType.DEBUGGER_DETACH:
       if (payload.tabId) {
@@ -324,10 +339,9 @@ async function handleGoForward(tabId: number, sendResponse: (response: unknown) 
 
 async function handleGetCookies(tabId: number, url: string | undefined, sendResponse: (response: unknown) => void) {
   try {
-    const tabs = await chrome.tabs.query({ active: true, currentWindow: true });
-    const tab = tabs[0];
+    const tab = await chrome.tabs.get(tabId);
     const targetUrl = url || tab?.url;
-    
+
     if (!targetUrl) {
       sendResponse({ success: false, error: 'No URL available' });
       return;

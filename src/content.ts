@@ -429,7 +429,7 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     // 原有消息类型继续处理
     case MessageType.ELEMENT_HIGHLIGHT:
-      if (payload.active) {
+      if (payload?.active) {
         picker.activate((elementInfo) => {
           chrome.runtime.sendMessage({
             type: MessageType.ELEMENT_SELECTED,
