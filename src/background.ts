@@ -439,6 +439,64 @@ async function handleSetCookie(tabId: number, payload: unknown, sendResponse: (r
   }
 }
 
+/**
+ * Sanitize a value so it's safe for structured clone messaging.
+ * Tests JSON serializability and truncates oversized results to
+ * prevent RangeError / structured clone failures.
+ */
+function sanitizeForMessaging(value: unknown): unknown {
+  // Primitives are always safe
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'boolean' || typeof value === 'number' || typeof value === 'string') return value;
+
+  // Test serializability
+  let json: string;
+  try {
+    json = JSON.stringify(value);
+  } catch {
+    const type = typeof value;
+    if (Array.isArray(value)) return `[Array(${(value as unknown[]).length})]`;
+    if (type === 'object') return `[Object]`;
+    return String(value);
+  }
+
+  // Cap total size to prevent structured clone RangeError
+  const MAX_JSON_SIZE = 256 * 1024; // 256 KB
+  if (json.length <= MAX_JSON_SIZE) return value;
+
+  // Too large — build a truncated preview
+  if (Array.isArray(value)) {
+    const kept: unknown[] = [];
+    let size = 0;
+    for (const item of value as unknown[]) {
+      const itemJson = JSON.stringify(item);
+      if (size + itemJson.length + 2 > MAX_JSON_SIZE - 200) break;
+      kept.push(item);
+      size += itemJson.length + 2;
+    }
+    return {
+      __truncated: true,
+      totalItems: (value as unknown[]).length,
+      items: kept,
+    };
+  }
+
+  if (typeof value === 'object' && value !== null) {
+    const entries = Object.entries(value as Record<string, unknown>);
+    const kept: Record<string, unknown> = {};
+    let size = 0;
+    for (const [k, v] of entries) {
+      const entryJson = JSON.stringify({ [k]: v });
+      if (size + entryJson.length > MAX_JSON_SIZE - 200) break;
+      kept[k] = v;
+      size += entryJson.length;
+    }
+    return { __truncated: true, totalKeys: entries.length, ...kept };
+  }
+
+  return { __truncated: true, type: typeof value, length: json.length };
+}
+
 async function handleExecuteScript(tabId: number, script: string, sendResponse: (response: unknown) => void) {
   let needsDetach = false;
   try {
@@ -468,8 +526,9 @@ async function handleExecuteScript(tabId: number, script: string, sendResponse: 
         error: result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'Script execution error',
       });
     } else if (result.result?.value !== undefined) {
-      // JSON-serializable value returned successfully
-      sendResponse({ success: true, result: result.result.value });
+      // CDP returned a JSON-serializable value — sanitize for structured clone safety
+      const sanitized = sanitizeForMessaging(result.result.value);
+      sendResponse({ success: true, result: sanitized });
     } else if (result.result?.objectId) {
       // Value is not serializable (DOM node, function, etc.) — return description
       sendResponse({
