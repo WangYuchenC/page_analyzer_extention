@@ -1,5 +1,6 @@
-import { RefreshCw } from "lucide-react";
+import { RefreshCw, Copy, Check } from "lucide-react";
 import type { ChatMessage, ToolCallInfo } from "~types";
+import { useState } from "react";
 
 interface MessageBubbleProps {
   msg: ChatMessage;
@@ -67,6 +68,41 @@ function ToolCallList({ toolCallInfos }: { toolCallInfos?: ToolCallInfo[] }) {
   );
 }
 
+function CodeBlock({ code }: { code: string }) {
+  const [copied, setCopied] = useState(false);
+
+  // Strip the language identifier from the first line for copying
+  const codeLines = code.split("\n");
+  const codeToCopy = codeLines.length > 1 && codeLines[0].trim().match(/^[a-zA-Z0-9_+#-]+$/)
+    ? codeLines.slice(1).join("\n")
+    : code;
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(codeToCopy);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API may not be available
+    }
+  };
+
+  return (
+    <div className="relative group my-2">
+      <button
+        onClick={handleCopy}
+        className="absolute top-2 right-2 p-1.5 rounded bg-gray-700 text-gray-300 opacity-0 group-hover:opacity-100 transition-opacity hover:bg-gray-600 hover:text-white"
+        title="复制代码"
+      >
+        {copied ? <Check className="w-3.5 h-3.5" /> : <Copy className="w-3.5 h-3.5" />}
+      </button>
+      <pre className="bg-gray-900 text-gray-100 p-2 rounded overflow-x-auto">
+        <code>{code}</code>
+      </pre>
+    </div>
+  );
+}
+
 function MessageContent({
   content,
   isStreaming,
@@ -78,14 +114,7 @@ function MessageContent({
     <div className="whitespace-pre-wrap">
       {content.split("```").map((part, index) => {
         if (index % 2 === 1) {
-          return (
-            <pre
-              key={index}
-              className="bg-gray-900 text-gray-100 p-2 rounded my-2 overflow-x-auto"
-            >
-              <code>{part}</code>
-            </pre>
-          );
+          return <CodeBlock key={index} code={part} />;
         }
         return part.split("`").map((inline, i) => {
           if (i % 2 === 1) {

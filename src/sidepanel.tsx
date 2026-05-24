@@ -320,7 +320,6 @@ function SidePanel() {
               }));
               toolCalls.forEach((tc) => toolCallMsgMap.set(tc.id, assistantMsgId));
               updateMessage(assistantMsgId, {
-                content: "",
                 metadata: { toolCallInfos: currentToolCalls },
                 isStreaming: false,
               });

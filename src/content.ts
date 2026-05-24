@@ -229,10 +229,6 @@ class ElementPicker {
 
 const picker = new ElementPicker();
 
-// Guard: only register listener once per page, even if re-injected
-if (!document.documentElement.hasAttribute('data-page-analyzer-init')) {
-  document.documentElement.setAttribute('data-page-analyzer-init', 'true');
-
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const { type, payload } = message;
   debugLog('ContentScript', 'Received message:', type, payload);
@@ -536,9 +532,9 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 
     default:
       debugLog('ContentScript', 'Unknown message type:', type);
+      sendResponse({ error: `Unknown message type: ${type}` });
       break;
   }
 });
 
 infoLog('ContentScript', 'Page Analyzer content script loaded on:', window.location.href);
-}

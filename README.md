@@ -67,15 +67,15 @@ pnpm package
 ```
 src/
 ├── background.ts       # Service Worker: 消息路由, Debugger 管理, 截图, 导航(事件驱动等待)/Cookie管理
-├── content.ts          # Content Script: 元素选取器, CSS 查询, 全文搜索, 页面交互工具, 重复注入防护
+├── content.ts          # Content Script: 元素选取器, CSS 查询, 全文搜索, 页面交互工具
 ├── sidepanel.tsx       # 侧边栏 UI (多会话管理, 流式聊天 + 网络请求)
 ├── style.css           # 全局样式 + Tailwind
 ├── types/index.ts      # TypeScript 类型定义
 ├── store/app-store.ts  # Zustand 状态管理 (API Key 加密持久化, 多会话)
 ├── components/         # UI 组件 (MessageBubble, ChatInput, NetworkTab)
 └── utils/
-    ├── agent.ts        # LangChain Agent 集成 (18个工具, 工具调用循环, 工具状态实时推送, 上下文截断保护)
-    ├── messaging.ts    # 消息传递工具 (含 content script 自动注入)
+    ├── agent.ts        # LangChain Agent 集成 (18个工具, 工具调用循环, 最大15次迭代防无限循环, 工具状态实时推送, 上下文截断保护, invokeModelRaw非流式回退)
+    ├── messaging.ts    # 消息传递工具 (含 content script 自动注入 + 300ms 初始化等待)
     ├── crypto.ts       # Web Crypto API AES-GCM 加密
     ├── logger.ts       # 结构化日志 (debug/info/warn/error)
     └── tools.ts        # 系统提示构建
@@ -86,7 +86,7 @@ src/
 ## 技术细节
 
 - 无 `popup.tsx` — 点击图标直接打开 Chrome 侧边栏
-- 使用 LangChain `ChatOpenAI` 流式调用 LLM API，支持自定义 Base URL 和模型；follow-up 请求使用原生 `fetch` + SSE（兼容 DeepSeek `reasoning_content`）
+- 使用 LangChain `ChatOpenAI` 流式调用 LLM API，支持自定义 Base URL 和模型；follow-up 请求使用原生 `fetch` + SSE；`invokeModelRaw` 非流式回退用于 DeepSeek 推理模式（保持 `reasoning_content` 传递），内容在返回后主动 yield 以保证 UI 渲染
 - LLM 可主动调用 18 种工具进行页面分析和交互，所有工具均已添加参数验证；自动处理 LangChain DynamicTool 的 `{input: "..."}` 参数包裹问题
 - 双层上下文保护：`toLangChainMessages` 对存储消息做单条 5k / 总量 40k 截断；`streamAgentResponse` 循环内对工具结果做 5k 截断并跳过空 HumanMessage
 - 兼容 DeepSeek 等深度推理模型，自动处理 `reasoning_content` 字段

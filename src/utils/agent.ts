@@ -654,9 +654,22 @@ export async function* streamAgentResponse(
 
   const conversationHistory: BaseMessage[] = [...history];
   const MAX_TOOL_RESULT_CHARS = 5000;
+  const MAX_ITERATIONS = 15;
   let pendingReasoningContent = false;
+  let iteration = 0;
 
   while (!signal.aborted) {
+    iteration++;
+
+    if (iteration > MAX_ITERATIONS) {
+      warnLog("streamAgentResponse", `Max iterations (${MAX_ITERATIONS}) reached, stopping tool loop`);
+      yield {
+        type: "content",
+        data: `\n\n[已达到最大工具调用次数(${MAX_ITERATIONS})，可能遇到了循环问题，请尝试更具体地描述您的问题]`,
+      };
+      break;
+    }
+
     try {
       let response: AIMessageChunk;
 
@@ -668,6 +681,10 @@ export async function* streamAgentResponse(
         infoLog("streamAgentResponse", "Using raw API path to preserve reasoning_content");
         response = await invokeModelRaw(agent, input, conversationHistory, signal);
         pendingReasoningContent = false;
+        // invokeModelRaw is non-streaming, yield its content to the UI
+        if (response.content) {
+          yield { type: "content", data: String(response.content) };
+        }
       } else {
         const messages: BaseMessage[] = [
           new SystemMessage(agent.systemPrompt),
@@ -698,10 +715,26 @@ export async function* streamAgentResponse(
         infoLog("streamAgentResponse", `Total content length: ${totalChars} chars (~${Math.floor(totalChars / 4)} tokens)`);
         infoLog("streamAgentResponse", "=== End LLM input ===");
 
-        response = await agent.model.invoke(messages, { signal });
+        // Use streaming for real-time token delivery
+        const llmStream = await agent.model.stream(messages, { signal });
+        // Accumulate via concat() which properly merges tool_call_chunks
+        // and additional_kwargs across multiple stream chunks
+        let accumulated = new AIMessageChunk({ content: "" });
+
+        for await (const chunk of llmStream) {
+          if (signal.aborted) break;
+
+          accumulated = accumulated.concat(chunk);
+
+          if (chunk.content) {
+            yield { type: "content", data: String(chunk.content) };
+          }
+        }
+
+        response = accumulated;
       }
 
-      // Preserve reasoning_content flag for next iteration
+      // Preserve reasoning_content flag for DeepSeek thinking mode
       const rc = (response.additional_kwargs as Record<string, unknown>)?.reasoning_content;
       if (typeof rc === "string" && response.tool_calls?.length) {
         pendingReasoningContent = true;
@@ -758,9 +791,7 @@ export async function* streamAgentResponse(
         conversationHistory.push(...toolMessages);
         input = "";
       } else {
-        if (response.content) {
-          yield { type: "content", data: String(response.content) };
-        }
+        // Content already streamed chunk-by-chunk above
         yield { type: "finish", data: [] };
         break;
       }

@@ -74,7 +74,9 @@ export async function sendToContentScript<T = unknown>(
     const jsFiles = chrome.runtime.getManifest().content_scripts?.[0]?.js;
     if (jsFiles) {
       await chrome.scripting.executeScript({ target: { tabId }, files: jsFiles });
-      debugLog('Messaging', 'Content script injected, retrying...');
+      debugLog('Messaging', 'Content script injected, waiting for initialization...');
+      // Wait for content script to initialize and register its listener
+      await new Promise(r => setTimeout(r, 300));
     }
     const response = await chrome.tabs.sendMessage(tabId, message);
     debugLog('Messaging', 'sendToContentScript response after injection:', tabId, message.type, response);
