@@ -103,6 +103,196 @@ function CodeBlock({ code }: { code: string }) {
   );
 }
 
+function parseMarkdown(text: string): React.ReactNode[] {
+  const parts: React.ReactNode[] = [];
+  let remaining = text;
+  let key = 0;
+
+  const renderInlineMarkdown = (text: string): React.ReactNode[] => {
+    const result: React.ReactNode[] = [];
+    let remaining = text;
+    
+    while (remaining.length > 0) {
+      let matched = false;
+
+      const boldMatch = remaining.match(/^\*\*(.+?)\*\*/);
+      if (boldMatch) {
+        result.push(<strong key={`bold-${key++}`} className="font-bold">{boldMatch[1]}</strong>);
+        remaining = remaining.slice(boldMatch[0].length);
+        matched = true;
+        continue;
+      }
+
+      const italicMatch = remaining.match(/^\*(.+?)\*/);
+      if (italicMatch) {
+        result.push(<em key={`italic-${key++}`} className="italic">{italicMatch[1]}</em>);
+        remaining = remaining.slice(italicMatch[0].length);
+        matched = true;
+        continue;
+      }
+
+      const linkMatch = remaining.match(/^\[([^\]]+)\]\(([^)]+)\)/);
+      if (linkMatch) {
+        result.push(<a key={`link-${key++}`} href={linkMatch[2]} className="text-primary-600 underline hover:text-primary-700" target="_blank" rel="noopener noreferrer">{linkMatch[1]}</a>);
+        remaining = remaining.slice(linkMatch[0].length);
+        matched = true;
+        continue;
+      }
+
+      const inlineCodeMatch = remaining.match(/^`([^`]+)`/);
+      if (inlineCodeMatch) {
+        result.push(<code key={`code-${key++}`} className="bg-gray-100 px-1 rounded text-primary-700 font-mono text-sm">{inlineCodeMatch[1]}</code>);
+        remaining = remaining.slice(inlineCodeMatch[0].length);
+        matched = true;
+        continue;
+      }
+
+      if (!matched) {
+        const nextSpecial = Math.min(
+          remaining.indexOf('**') === -1 ? Infinity : remaining.indexOf('**'),
+          remaining.indexOf('*') === -1 ? Infinity : remaining.indexOf('*'),
+          remaining.indexOf('[') === -1 ? Infinity : remaining.indexOf('['),
+          remaining.indexOf('`') === -1 ? Infinity : remaining.indexOf('`')
+        );
+
+        if (nextSpecial === Infinity) {
+          result.push(remaining);
+          remaining = '';
+        } else {
+          result.push(remaining.slice(0, nextSpecial));
+          remaining = remaining.slice(nextSpecial);
+        }
+      }
+    }
+
+    return result;
+  };
+
+  const lines = remaining.split('\n');
+  let inTable = false;
+  let tableRows: string[] = [];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (line.startsWith('---') && line.trim() === '---') {
+      parts.push(<hr key={`hr-${key++}`} className="my-2 border-gray-300" />);
+      continue;
+    }
+
+    const headingMatch = line.match(/^(#{1,6})\s+(.+)/);
+    if (headingMatch) {
+      const level = headingMatch[1].length;
+      const HeadingTag = `h${Math.min(level, 6)}` as keyof JSX.IntrinsicElements;
+      parts.push(<HeadingTag key={`heading-${key++}`} className={`font-semibold mt-2 mb-1 ${level === 1 ? 'text-lg' : level === 2 ? 'text-base' : 'text-sm'}`}>{renderInlineMarkdown(headingMatch[2])}</HeadingTag>);
+      continue;
+    }
+
+    if (line.match(/^\|.*\|$/)) {
+      if (!inTable) {
+        inTable = true;
+        tableRows = [];
+      }
+      tableRows.push(line);
+      continue;
+    }
+
+    if (inTable) {
+      inTable = false;
+      const headerRow = tableRows[0]?.split('|').filter(cell => cell.trim() !== '');
+      const separatorRow = tableRows[1];
+      const bodyRows = tableRows.slice(separatorRow?.match(/^[|: -]+$/) ? 2 : 1);
+
+      if (headerRow) {
+        parts.push(
+          <table key={`table-${key++}`} className="w-full text-xs border-collapse my-2">
+            <thead>
+              <tr className="bg-gray-100">
+                {headerRow.map((cell, idx) => (
+                  <th key={idx} className="border border-gray-300 px-2 py-1 font-medium text-left">{renderInlineMarkdown(cell.trim())}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {bodyRows.map((row, rowIdx) => {
+                const cells = row.split('|').filter(cell => cell.trim() !== '');
+                return (
+                  <tr key={rowIdx} className="hover:bg-gray-50">
+                    {cells.map((cell, cellIdx) => (
+                      <td key={cellIdx} className="border border-gray-300 px-2 py-1">{renderInlineMarkdown(cell.trim())}</td>
+                    ))}
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        );
+      }
+      tableRows = [];
+    }
+
+    const listMatch = line.match(/^(\s*)([-*+])\s+(.+)/);
+    if (listMatch) {
+      const content = renderInlineMarkdown(listMatch[3]);
+      const indent = listMatch[1].length;
+      if (indent === 0) {
+        parts.push(<li key={`li-${key++}`} className="ml-4 list-disc">{content}</li>);
+      } else if (indent < 4) {
+        parts.push(<li key={`li-${key++}`} className="ml-8 list-disc">{content}</li>);
+      } else {
+        parts.push(<li key={`li-${key++}`} className="ml-12 list-disc">{content}</li>);
+      }
+      continue;
+    }
+
+    const numberedMatch = line.match(/^(\s*\d+\.)\s+(.+)/);
+    if (numberedMatch) {
+      parts.push(<li key={`num-li-${key++}`} className="ml-4 list-decimal">{renderInlineMarkdown(numberedMatch[2])}</li>);
+      continue;
+    }
+
+    if (line.trim() === '') {
+      parts.push(<br key={`br-${key++}`} />);
+    } else {
+      parts.push(<p key={`p-${key++}`} className="mb-1">{renderInlineMarkdown(line)}</p>);
+    }
+  }
+
+  if (inTable && tableRows.length > 0) {
+    const headerRow = tableRows[0]?.split('|').filter(cell => cell.trim() !== '');
+    const separatorRow = tableRows[1];
+    const bodyRows = tableRows.slice(separatorRow?.match(/^[|: -]+$/) ? 2 : 1);
+
+    if (headerRow) {
+      parts.push(
+        <table key={`table-${key++}`} className="w-full text-xs border-collapse my-2">
+          <thead>
+            <tr className="bg-gray-100">
+              {headerRow.map((cell, idx) => (
+                <th key={idx} className="border border-gray-300 px-2 py-1 font-medium text-left">{renderInlineMarkdown(cell.trim())}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {bodyRows.map((row, rowIdx) => {
+              const cells = row.split('|').filter(cell => cell.trim() !== '');
+              return (
+                <tr key={rowIdx} className="hover:bg-gray-50">
+                  {cells.map((cell, cellIdx) => (
+                    <td key={cellIdx} className="border border-gray-300 px-2 py-1">{renderInlineMarkdown(cell.trim())}</td>
+                  ))}
+                </tr>
+              );
+            })}
+          </tbody>
+        </table>
+      );
+    }
+  }
+
+  return parts;
+}
+
 function MessageContent({
   content,
   isStreaming,
@@ -110,23 +300,20 @@ function MessageContent({
   content: string;
   isStreaming?: boolean;
 }) {
+  const parts: React.ReactNode[] = [];
+  const codeBlocks = content.split("```");
+  
+  for (let i = 0; i < codeBlocks.length; i++) {
+    if (i % 2 === 1) {
+      parts.push(<CodeBlock key={`code-${i}`} code={codeBlocks[i]} />);
+    } else {
+      parts.push(<span key={`md-${i}`}>{parseMarkdown(codeBlocks[i])}</span>);
+    }
+  }
+
   return (
     <div className="whitespace-pre-wrap">
-      {content.split("```").map((part, index) => {
-        if (index % 2 === 1) {
-          return <CodeBlock key={index} code={part} />;
-        }
-        return part.split("`").map((inline, i) => {
-          if (i % 2 === 1) {
-            return (
-              <code key={i} className="bg-gray-100 px-1 rounded text-primary-700">
-                {inline}
-              </code>
-            );
-          }
-          return inline;
-        });
-      })}
+      {parts}
       {isStreaming && (
         <span className="inline-block w-2 h-4 bg-gray-600 animate-blink ml-0.5" />
       )}

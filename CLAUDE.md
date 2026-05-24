@@ -52,7 +52,7 @@ All message types are defined in `src/types/index.ts` as the `MessageType` enum.
 - `src/utils/tools.ts` — `buildSystemPrompt()` — constructs the system prompt with page context and tool descriptions
 - `src/utils/crypto.ts` — Web Crypto API AES-GCM + PBKDF2 for `encrypt()` / `decrypt()` of the API key at rest
 - `src/utils/logger.ts` — Structured logging: `debugLog()`, `infoLog()`, `warnLog()`, `errorLog()` with `[PageAnalyzer:prefix]` format. Debug logs gated by `localStorage` flag (`page-analyzer-debug`)
-- `src/components/` — UI components: `MessageBubble` (markdown/code rendering, streaming cursor, tool call status with live completion/error states), `ChatInput` (textarea, element picker button, send/stop), `NetworkTab` (request/response list)
+- `src/components/` — UI components: `MessageBubble` (full markdown rendering including tables, bold, italic, links, headings, lists, code blocks, streaming cursor, tool call status with live completion/error states), `ChatInput` (textarea, element picker button, send/stop), `NetworkTab` (request/response list)
 
 ## Agent Tools (18 total)
 
