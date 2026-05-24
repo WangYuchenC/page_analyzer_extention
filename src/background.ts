@@ -498,14 +498,24 @@ function sanitizeForMessaging(value: unknown): unknown {
 }
 
 async function handleExecuteScript(tabId: number, script: string, sendResponse: (response: unknown) => void) {
-  let needsDetach = false;
-  try {
-    // Attach debugger only if not already attached (e.g., by network monitoring)
-    if (!debuggerManager.isAttached(tabId)) {
-      needsDetach = true;
-      await debuggerManager.attach(tabId);
-    }
+  // Only attach if not already managed by DebuggerManager (network monitoring).
+  // We MUST NOT use debuggerManager.attach() because that enables Network and
+  // Debugger domains, triggering fetchResponseBody for EVERY resource which
+  // decodes large binary bodies via atob() and forwards via sendMessage,
+  // causing structured clone RangeError.
+  // Instead: minimal attach → Runtime.evaluate → detach. No side effects.
+  const usingOwnSession = !debuggerManager.isAttached(tabId);
 
+  if (usingOwnSession) {
+    try {
+      await chrome.debugger.attach({ tabId }, '1.3');
+    } catch (e) {
+      sendResponse({ success: false, error: (e as Error).message });
+      return;
+    }
+  }
+
+  try {
     const result = await chrome.debugger.sendCommand(
       { tabId },
       'Runtime.evaluate',
@@ -520,17 +530,14 @@ async function handleExecuteScript(tabId: number, script: string, sendResponse: 
     };
 
     if (result.exceptionDetails) {
-      // Script threw an error — return the exception info
       sendResponse({
         success: false,
         error: result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'Script execution error',
       });
     } else if (result.result?.value !== undefined) {
-      // CDP returned a JSON-serializable value — sanitize for structured clone safety
       const sanitized = sanitizeForMessaging(result.result.value);
       sendResponse({ success: true, result: sanitized });
     } else if (result.result?.objectId) {
-      // Value is not serializable (DOM node, function, etc.) — return description
       sendResponse({
         success: true,
         result: result.result.description ? `[${result.result.description}]` : '[Non-serializable return value]',
@@ -541,13 +548,11 @@ async function handleExecuteScript(tabId: number, script: string, sendResponse: 
   } catch (error) {
     sendResponse({ success: false, error: (error as Error).message });
   } finally {
-    // Only detach if we attached in this call — don't interfere with
-    // other debugger users (e.g., network monitoring)
-    if (needsDetach) {
+    if (usingOwnSession) {
       try {
-        await debuggerManager.detach(tabId);
-      } catch (e) {
-        console.error('Failed to detach debugger:', e);
+        await chrome.debugger.detach({ tabId });
+      } catch {
+        // Ignore detach errors
       }
     }
   }
