@@ -11,6 +11,8 @@ pnpm package   # Build + create zip archive for Chrome Web Store submission
 pnpm lint      # Run ESLint on src/
 pnpm lint:fix  # Run ESLint with --fix
 pnpm typecheck # TypeScript type checking (tsc --noEmit)
+pnpm test      # Run test suite (Vitest)
+pnpm test:watch # Run tests in watch mode
 ```
 
 ## Project Overview
@@ -47,8 +49,8 @@ All message types are defined in `src/types/index.ts` as the `MessageType` enum.
 
 - `src/types/index.ts` — `ElementInfo`, `NetworkRequest`, `NetworkResponse`, `ChatMessage`, `ToolCall`, `PageSummary`, `StreamChunk`, `MessageType` enum, plus payload interfaces for all tools
 - `src/store/app-store.ts` — Zustand store with `persist` middleware (persists `apiKey`, `baseUrl`, `model`, `temperature`, and `messages` to `chrome.storage` under key `page-analyzer-storage`, with `apiKey` encrypted via Web Crypto API before write); store methods include `updateMessage`, `appendToMessage`, `setMessageStreaming` for streaming support
-- `src/utils/messaging.ts` — `sendMessage()`, `sendMessageToTab()`, `sendToContentScript()` (with content script injection fallback + 300ms init delay), `addMessageListener()` — typed wrappers around `chrome.runtime` APIs with proper error message extraction
-- `src/utils/agent.ts` — LangChain integration: `createChatModel()`, `createChromeTools()` (DynamicTool wrappers with 18 tools plus `parseInput` that unwraps the `{input: "..."}` wrapper LangChain applies to DynamicTool args), `createAgentForTab()`, `toLangChainMessages()` (truncates single messages >5k chars, enforces MAX_TOTAL_CHARS=40k, MAX_MESSAGES=50), `executeToolCall()`, `streamAgentResponse()` (tool-calling loop with async generator — max 15 iterations to prevent infinite loops, truncates tool results >5k chars, skips empty HumanMessage pushes, yields content from raw API responses to prevent missing conclusion output), `streamFollowUp()` (bypasses LangChain serializer to preserve `reasoning_content` for DeepSeek compatibility using raw fetch + SSE), `invokeModelRaw()` (non-streaming fallback that calls the API directly with `msgToApi()` to preserve `reasoning_content`; content yielded explicitly after response since it bypasses LangChain's streaming path)
+- `src/utils/messaging.ts` — `sendMessage()`, `sendMessageToTab()`, `sendToContentScript()` (with content script injection fallback + 300ms init delay), `addMessageListener()` — typed wrappers around `chrome.runtime` APIs with proper error message extraction. All message-passing functions include 30-second timeout protection (`Promise.race`) to prevent hanging on unresponsive tabs.
+- `src/utils/agent.ts` — LangChain integration: `createChatModel()`, `createChromeTools()` (DynamicTool wrappers with 18 tools plus `parseInput` that safely unwraps the `{input: "..."}` wrapper LangChain applies to DynamicTool args — only unwraps when inner value starts with `{` or `[` to avoid false positives), `createAgentForTab()`, `toLangChainMessages()` (truncates single messages >5k chars, enforces MAX_TOTAL_CHARS=40k, MAX_MESSAGES=50), `executeToolCall()` (normalizes error formats from `{success:false,error}` → `{error}` for consistency), `streamAgentResponse()` (tool-calling loop with async generator — max 15 iterations to prevent infinite loops, truncates tool results >5k chars, skips empty HumanMessage pushes, yields content from raw API responses to prevent missing conclusion output), `streamFollowUp()` (bypasses LangChain serializer to preserve `reasoning_content` for DeepSeek compatibility using raw fetch + SSE), `invokeModelRaw()` (non-streaming fallback with **full JSON Schema parameter definitions** for all 18 tools — DeepSeek reasoning models now receive proper parameter schemas instead of empty `properties: {}`)
 - `src/utils/tools.ts` — `buildSystemPrompt()` — constructs the system prompt with page context and tool descriptions
 - `src/utils/crypto.ts` — Web Crypto API AES-GCM + PBKDF2 for `encrypt()` / `decrypt()` of the API key at rest
 - `src/utils/logger.ts` — Structured logging: `debugLog()`, `infoLog()`, `warnLog()`, `errorLog()` with `[PageAnalyzer:prefix]` format. Debug logs gated by `localStorage` flag (`page-analyzer-debug`)
@@ -91,6 +93,9 @@ All message types are defined in `src/types/index.ts` as the `MessageType` enum.
 - **DOM Picker**: `ElementPicker` class creates a full-screen transparent overlay with `pointer-events: none`, attaches `mouseover`/`mouseout`/`click` listeners in capture phase, highlights elements with blue outline, extracts `XPath`, `cssSelector`, `attributes`, `rect`, `outerHTML` (truncated 2000 chars), `innerText`. Selected element stored on `window.__pageAnalyzerSelectedElement`.
 
 - **Side panel entry**: Clicking the extension icon triggers `chrome.action.onClicked` in background.ts, which calls `chrome.sidePanel.open()` to open the side panel. No popup.tsx exists
+- **Testing**: Tests are in `src/__tests__/` using Vitest + happy-dom. Chrome APIs are mocked via `chrome-mock.ts`. Run with `pnpm test`. Tests cover `parseInput`, parameter validation, message conversion (`msgToApi`), `buildSystemPrompt`, tool error format consistency, debugger lifecycle, and DOM event dispatching.
+- **`execute_script`**: Uses CDP `Runtime.evaluate` to bypass page CSP. Debugger is automatically detached in a `finally` block after script execution (success or failure) to prevent resource leaks.
+- **`input_text`**: Dispatches `input`, `change`, and `blur` events for broader framework compatibility (React, Vue, form validation libraries). In React controlled components, direct `.value` assignment may be intercepted — the native `HTMLInputElement.prototype.value` setter path should be used as a fallback.
 
 ## Configuration
 

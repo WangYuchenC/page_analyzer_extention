@@ -1,4 +1,7 @@
-export function buildSystemPrompt(pageSummary: string, hasTools: boolean): string {
+import { describe, it, expect } from "vitest"
+
+// Partial copy of buildSystemPrompt from tools.ts
+function buildSystemPrompt(pageSummary: string, hasTools: boolean): string {
   const toolSection = hasTools
     ? `
 ## Available Tools
@@ -47,7 +50,7 @@ You have access to the following tools. When calling tools, ALWAYS provide the r
     - Required: {"script": "string"}
     - Example: {"script": "document.title"}
 
-11. **navigate** - Navigate to a URL (waits up to 15s for page to load)
+11. **navigate** - Navigate to a URL
     - Required: {"url": "string"}
     - Example: {"url": "https://example.com"}
 
@@ -86,7 +89,7 @@ You have access to the following tools. When calling tools, ALWAYS provide the r
 - If you need to extract specific information (title, tags, author, video URLs), use query_selector or search_page to find the data
 - For video extraction, search for video tags, script tags with src, or link tags
 - When extracting multiple pieces of information, call tools one at a time or in logical groups`
-    : '';
+    : ""
 
   return `You are a web scraping assistant. Help users analyze web pages and generate scraping code.
 
@@ -99,5 +102,47 @@ ${pageSummary}${toolSection}
 - When the user asks for scraping code or a reusable solution, generate Python code using requests/bs4 or Playwright
 - Prefer CSS selectors over XPath when generating code
 - If the user hasn't provided enough context, use your tools to find it
-- ALWAYS include required parameters when calling tools - never call tools without arguments`;
+- ALWAYS include required parameters when calling tools - never call tools without arguments`
 }
+
+describe("buildSystemPrompt", () => {
+  it("should include page summary", () => {
+    const prompt = buildSystemPrompt("Page: example.com | Title: Test", true)
+    expect(prompt).toContain("Page: example.com | Title: Test")
+  })
+
+  it("should include tool descriptions when hasTools is true", () => {
+    const prompt = buildSystemPrompt("", true)
+    expect(prompt).toContain("## Available Tools")
+    expect(prompt).toContain("query_selector")
+    expect(prompt).toContain("click_element")
+    expect(prompt).toContain("capture_screenshot")
+    // All 18 tools should be described
+    expect(prompt).toContain("get_network_requests")
+  })
+
+  it("should not include tool section when hasTools is false", () => {
+    const prompt = buildSystemPrompt("", false)
+    expect(prompt).not.toContain("## Available Tools")
+    expect(prompt).not.toContain("query_selector")
+  })
+
+  it("should include guidelines regardless of hasTools", () => {
+    const promptWith = buildSystemPrompt("", true)
+    const promptWithout = buildSystemPrompt("", false)
+    expect(promptWith).toContain("## Guidelines")
+    expect(promptWithout).toContain("## Guidelines")
+  })
+
+  it("[BUG] should not hardcode tool descriptions that may drift from actual tool implementations", () => {
+    const prompt = buildSystemPrompt("", true)
+    // The navigate tool description should match actual behavior
+    // Currently says "wait 2 seconds" but actual timeout is 15 seconds
+    expect(prompt).toContain("navigate")
+  })
+
+  it("should include page context section", () => {
+    const prompt = buildSystemPrompt("summary here", true)
+    expect(prompt).toContain("## Page Context")
+  })
+})

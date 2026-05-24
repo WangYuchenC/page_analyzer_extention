@@ -473,6 +473,9 @@ async function handleExecuteScript(tabId: number, script: string, sendResponse: 
     }
   } catch (error) {
     sendResponse({ success: false, error: (error as Error).message });
+  } finally {
+    // Always detach debugger after execution to avoid resource leaks
+    await debuggerManager.detach(tabId).catch(() => {});
   }
 }
 

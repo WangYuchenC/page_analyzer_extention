@@ -279,22 +279,34 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
             sendResponse({ success: false, error: 'Text is required' });
             return;
           }
-          
+
           const element = document.querySelector(selector);
           if (!element) {
             sendResponse({ success: false, error: `Element not found: ${selector}` });
             return;
           }
-          
-          (element as HTMLInputElement).value = String(text);
-          
-          const inputEvent = new Event('input', { bubbles: true });
-          element.dispatchEvent(inputEvent);
-          
+
+          const inputEl = element as HTMLInputElement;
+          inputEl.value = String(text);
+
+          // Dispatch input event (triggers most framework listeners)
+          inputEl.dispatchEvent(new Event('input', { bubbles: true }));
+          // Dispatch change event (triggers form validation libraries)
+          inputEl.dispatchEvent(new Event('change', { bubbles: true }));
+          // Dispatch blur event (triggers validation on focus loss)
+          inputEl.dispatchEvent(new Event('blur', { bubbles: true }));
+
+          // Note: React controlled components intercept the native value setter
+          // and may not reflect .value = ... changes. For full React compatibility,
+          // consider using: Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value').set.call(inputEl, text)
+
           if (submit) {
-            element.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+            const form = inputEl.closest('form');
+            if (form) {
+              form.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }));
+            }
           }
-          
+
           sendResponse({ success: true, message: `Input text: ${text.length} characters` });
         } catch (e) {
           errorLog('ContentScript', 'Input error:', e);

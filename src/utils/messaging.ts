@@ -1,6 +1,9 @@
 import { MessageType, type Message } from '~types';
 import { debugLog, errorLog, infoLog } from './logger';
 
+// Default timeout for message passing (tool calls should not hang forever)
+const DEFAULT_TIMEOUT_MS = 30000;
+
 function getErrorMessage(error: unknown): string {
   if (error instanceof Error) {
     return error.message;
@@ -11,13 +14,23 @@ function getErrorMessage(error: unknown): string {
   return String(error);
 }
 
+function withTimeout<T>(promise: Promise<T>, ms: number, label: string): Promise<T> {
+  return Promise.race([
+    promise,
+    new Promise<T>((_, reject) =>
+      setTimeout(() => reject(new Error(`Message "${label}" timed out after ${ms}ms`)), ms)
+    ),
+  ]);
+}
+
 export function sendMessage<T = unknown, R = unknown>(
   type: MessageType,
-  payload: T
+  payload: T,
+  timeoutMs = DEFAULT_TIMEOUT_MS
 ): Promise<R> {
   debugLog('Messaging', 'Sending message:', type, payload);
 
-  return new Promise((resolve, reject) => {
+  const inner = new Promise<R>((resolve, reject) => {
     chrome.runtime.sendMessage<Message<T>, R>(
       { type, payload },
       (response) => {
@@ -32,16 +45,19 @@ export function sendMessage<T = unknown, R = unknown>(
       }
     );
   });
+
+  return withTimeout(inner, timeoutMs, type);
 }
 
 export function sendMessageToTab<T = unknown, R = unknown>(
   tabId: number,
   type: MessageType,
-  payload: T
+  payload: T,
+  timeoutMs = DEFAULT_TIMEOUT_MS
 ): Promise<R> {
   debugLog('Messaging', 'Sending message to tab:', tabId, type, payload);
 
-  return new Promise((resolve, reject) => {
+  const inner = new Promise<R>((resolve, reject) => {
     chrome.tabs.sendMessage<Message<T>, R>(
       tabId,
       { type, payload },
@@ -57,16 +73,23 @@ export function sendMessageToTab<T = unknown, R = unknown>(
       }
     );
   });
+
+  return withTimeout(inner, timeoutMs, `${type} (tab ${tabId})`);
 }
 
 export async function sendToContentScript<T = unknown>(
   tabId: number,
-  message: { type: MessageType; payload?: unknown }
+  message: { type: MessageType; payload?: unknown },
+  timeoutMs = DEFAULT_TIMEOUT_MS
 ): Promise<T> {
   debugLog('Messaging', 'sendToContentScript:', tabId, message.type, message.payload);
 
   try {
-    const response = await chrome.tabs.sendMessage(tabId, message);
+    const response = await withTimeout(
+      chrome.tabs.sendMessage(tabId, message),
+      timeoutMs,
+      `${message.type} (tab ${tabId})`
+    );
     debugLog('Messaging', 'sendToContentScript response:', tabId, message.type, response);
     return response;
   } catch (_error) {
@@ -78,7 +101,11 @@ export async function sendToContentScript<T = unknown>(
       // Wait for content script to initialize and register its listener
       await new Promise(r => setTimeout(r, 300));
     }
-    const response = await chrome.tabs.sendMessage(tabId, message);
+    const response = await withTimeout(
+      chrome.tabs.sendMessage(tabId, message),
+      timeoutMs,
+      `${message.type} (tab ${tabId}, retry)`
+    );
     debugLog('Messaging', 'sendToContentScript response after injection:', tabId, message.type, response);
     return response;
   }

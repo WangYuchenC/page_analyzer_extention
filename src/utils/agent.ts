@@ -17,23 +17,33 @@ function parseInput(input: string): Record<string, unknown> {
   if (!input) return {};
   try {
     const parsed = typeof input === "string" ? JSON.parse(input) : input;
+    if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)) {
+      return {};
+    }
+
     // DynamicTool + bindTools wraps args as {input: '{"key": "val"}'}
-    // Unwrap if the only key is "input" containing a JSON string
+    // Only unwrap if:
+    // 1. The parsed object has exactly one key called "input"
+    // 2. The value of "input" is a string
+    // 3. The string starts with "{" or "[" (looks like JSON structure)
+    // This avoids false positives when a tool legitimately has an "input" param
+    // with a plain string value like {input: "hello"} or {input: "42"}
+    const keys = Object.keys(parsed);
     if (
-      parsed &&
-      typeof parsed === "object" &&
-      !Array.isArray(parsed) &&
-      Object.keys(parsed).length === 1 &&
-      "input" in parsed &&
+      keys.length === 1 &&
+      keys[0] === "input" &&
       typeof parsed.input === "string"
     ) {
-      try {
-        return JSON.parse(parsed.input);
-      } catch {
-        // nested value is not JSON, return the wrapper as-is
-        return parsed;
+      const trimmed = parsed.input.trim();
+      if (trimmed.startsWith("{") || trimmed.startsWith("[")) {
+        try {
+          return JSON.parse(parsed.input);
+        } catch {
+          return parsed;
+        }
       }
     }
+
     return parsed;
   } catch {
     warnLog("parseInput", "Failed to parse input:", input);
@@ -313,7 +323,7 @@ export function createChromeTools(tabId: number) {
   const navigateTool = new DynamicTool({
     name: "navigate",
     description:
-      "Navigate to a new URL. Input: JSON with \"url\" (string, required). The page will be navigated and wait 2 seconds for loading.",
+      "Navigate to a new URL. Input: JSON with \"url\" (string, required). The page will be navigated and wait up to 15 seconds for loading.",
     func: async (input: string) => {
       debugLog("Tool:navigate", "Executing with input:", input);
       try {
@@ -624,6 +634,31 @@ export interface AgentStreamChunk {
   data: string | ToolCallData[] | ToolResultData;
 }
 
+/**
+ * Normalize tool error responses to a consistent format.
+ * Content script tools return {success: false, error: "..."} but
+ * agent tools expect {error: "..."}. This bridges the gap.
+ */
+function normalizeToolResponse(raw: string): string {
+  try {
+    const parsed = JSON.parse(raw);
+    if (parsed && typeof parsed === "object") {
+      // Detect {success: false, error: "..."} from content script
+      if (parsed.success === false && parsed.error) {
+        return JSON.stringify({ error: parsed.error });
+      }
+      // {success: true, ...} → strip success field, keep the rest
+      if (parsed.success === true) {
+        const { success, ...rest } = parsed;
+        return JSON.stringify(rest);
+      }
+    }
+  } catch {
+    // Not JSON, return as-is
+  }
+  return raw;
+}
+
 export async function executeToolCall(
   toolName: string,
   args: Record<string, unknown>,
@@ -635,7 +670,8 @@ export async function executeToolCall(
   }
   try {
     const result = await tool.func(JSON.stringify(args));
-    return typeof result === "string" ? result : JSON.stringify(result);
+    const raw = typeof result === "string" ? result : JSON.stringify(result);
+    return normalizeToolResponse(raw);
   } catch (error) {
     return JSON.stringify({ error: (error as Error).message });
   }
@@ -822,12 +858,129 @@ async function invokeModelRaw(
     ? normalizedBase
     : normalizedBase + "/chat/completions";
 
+  // Define proper JSON Schema parameters for each tool
+  // so that DeepSeek / reasoning models know what params each tool expects
+  const toolParamSchemas: Record<string, Record<string, unknown>> = {
+    query_selector: {
+      type: "object",
+      properties: {
+        selector: { type: "string", description: "CSS selector to query" },
+        maxResults: { type: "number", description: "Maximum results (default 5, max 20)" },
+        includeHtml: { type: "boolean", description: "Include HTML content in results" },
+      },
+      required: ["selector"],
+    },
+    search_page: {
+      type: "object",
+      properties: {
+        query: { type: "string", description: "Text to search for on the page" },
+        maxResults: { type: "number", description: "Maximum results (default 10, max 30)" },
+        contextChars: { type: "number", description: "Context characters around match (default 80)" },
+      },
+      required: ["query"],
+    },
+    get_page_info: {
+      type: "object",
+      properties: {},
+    },
+    get_selected_element: {
+      type: "object",
+      properties: {},
+    },
+    click_element: {
+      type: "object",
+      properties: {
+        selector: { type: "string", description: "CSS selector of element to click" },
+        waitBefore: { type: "number", description: "Milliseconds to wait before click" },
+        waitAfter: { type: "number", description: "Milliseconds to wait after click (default 500)" },
+      },
+      required: ["selector"],
+    },
+    input_text: {
+      type: "object",
+      properties: {
+        selector: { type: "string", description: "CSS selector of input field" },
+        text: { type: "string", description: "Text to input into the field" },
+        submit: { type: "boolean", description: "Whether to submit the form after input" },
+      },
+      required: ["selector", "text"],
+    },
+    scroll_page: {
+      type: "object",
+      properties: {
+        direction: { type: "string", enum: ["top", "bottom", "up", "down"], description: "Scroll direction" },
+        amount: { type: "number", description: "Scroll amount in pixels for up/down (default 500)" },
+      },
+      required: ["direction"],
+    },
+    hover_element: {
+      type: "object",
+      properties: {
+        selector: { type: "string", description: "CSS selector of element to hover" },
+        waitAfter: { type: "number", description: "Milliseconds to wait after hover (default 500)" },
+      },
+      required: ["selector"],
+    },
+    wait_for_element: {
+      type: "object",
+      properties: {
+        selector: { type: "string", description: "CSS selector of element to wait for" },
+        timeout: { type: "number", description: "Maximum wait time in ms (default 10000)" },
+      },
+      required: ["selector"],
+    },
+    execute_script: {
+      type: "object",
+      properties: {
+        script: { type: "string", description: "JavaScript code to execute in page context" },
+      },
+      required: ["script"],
+    },
+    navigate: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "URL to navigate to" },
+      },
+      required: ["url"],
+    },
+    go_back: { type: "object", properties: {} },
+    go_forward: { type: "object", properties: {} },
+    get_cookies: {
+      type: "object",
+      properties: {
+        url: { type: "string", description: "URL to get cookies for (defaults to current page)" },
+      },
+    },
+    set_cookie: {
+      type: "object",
+      properties: {
+        name: { type: "string", description: "Cookie name" },
+        value: { type: "string", description: "Cookie value" },
+        url: { type: "string", description: "Cookie URL" },
+        domain: { type: "string", description: "Cookie domain" },
+        path: { type: "string", description: "Cookie path" },
+        expirationDate: { type: "number", description: "Cookie expiration as Unix timestamp" },
+        secure: { type: "boolean" },
+        httpOnly: { type: "boolean" },
+      },
+      required: ["name", "value"],
+    },
+    capture_screenshot: { type: "object", properties: {} },
+    get_page_html: { type: "object", properties: {} },
+    get_network_requests: {
+      type: "object",
+      properties: {
+        limit: { type: "number", description: "Maximum requests to return (default 20)" },
+      },
+    },
+  };
+
   const tools = agent.tools.map((tool) => ({
     type: "function" as const,
     function: {
       name: tool.name,
       description: tool.description,
-      parameters: { type: "object", properties: {} as Record<string, unknown> },
+      parameters: toolParamSchemas[tool.name] || { type: "object", properties: {} },
     },
   }));
 

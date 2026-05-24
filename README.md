@@ -51,6 +51,12 @@ pnpm build
 
 # 打包（构建 + zip）
 pnpm package
+
+# 运行测试
+pnpm test
+
+# 测试监听模式
+pnpm test:watch
 ```
 
 开发模式加载 `build/chrome-mv3-dev`，生产构建加载 `build/chrome-mv3-prod`。
@@ -87,11 +93,15 @@ src/
 ## 技术细节
 
 - 无 `popup.tsx` — 点击图标直接打开 Chrome 侧边栏
-- 使用 LangChain `ChatOpenAI` 流式调用 LLM API，支持自定义 Base URL 和模型；follow-up 请求使用原生 `fetch` + SSE；`invokeModelRaw` 非流式回退用于 DeepSeek 推理模式（保持 `reasoning_content` 传递），内容在返回后主动 yield 以保证 UI 渲染
-- LLM 可主动调用 18 种工具进行页面分析和交互，所有工具均已添加参数验证；自动处理 LangChain DynamicTool 的 `{input: "..."}` 参数包裹问题
+- 使用 LangChain `ChatOpenAI` 流式调用 LLM API，支持自定义 Base URL 和模型；follow-up 请求使用原生 `fetch` + SSE；`invokeModelRaw` 非流式回退用于 DeepSeek 推理模式（保持 `reasoning_content` 传递），内容在返回后主动 yield 以保证 UI 渲染；`invokeModelRaw` 为全部 18 个工具定义了完整 JSON Schema 参数定义（修复之前空 `properties: {}` 导致推理模型无法正确传参的问题）
+- LLM 可主动调用 18 种工具进行页面分析和交互，所有工具均已添加参数验证；自动处理 LangChain DynamicTool 的 `{input: "..."}` 参数包裹问题（仅当值以 `{` 或 `[` 开头时才解包，避免误判 `{input: "hello"}` 等合法参数）
+- `execute_script` 通过 CDP `Runtime.evaluate` 执行任意 JavaScript 绕过 CSP；执行完成后通过 `finally` 块自动 detach Debugger 防止资源泄漏
+- `input_text` 额外分发 `change` 和 `blur` 事件以兼容 React/Vue 等现代框架和表单验证库；submit 行为改为查找最近 form 元素提交
+- 工具调用错误格式统一：`{success: false, error: ...}` 和 `{error: ...}` 两种格式自动归一化
+- 消息传递基于 `chrome.runtime` API，类型安全的枚举派发，错误信息正确解析；所有消息发送均包含 30 秒超时保护（`Promise.race`）防止 content script 无响应时永久挂起
 - 双层上下文保护：`toLangChainMessages` 对存储消息做单条 5k / 总量 40k 截断；`streamAgentResponse` 循环内对工具结果做 5k 截断并跳过空 HumanMessage
 - 兼容 DeepSeek 等深度推理模型，自动处理 `reasoning_content` 字段
-- 消息传递基于 `chrome.runtime` API，类型安全的枚举派发，错误信息正确解析
 - 持久化存储包括：API Key (AES-GCM 加密) / Base URL / Model / Temperature / 聊天记录，支持跨会话保留
 - 结构化页面摘要替代原始 HTML 截断，节省 LLM 上下文空间
+- 使用 Vitest + happy-dom 进行测试，Chrome API 通过 mock 模拟；测试覆盖 parseInput、参数校验、消息转换、工具错误格式、Debugger 生命周期、DOM 事件等
 - Markdown 渲染引擎支持完整格式：表格、加粗、斜体、链接、标题、列表、代码块、分隔线等，使用自定义解析器实现，无外部依赖
