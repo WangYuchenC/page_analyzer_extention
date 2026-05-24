@@ -66,19 +66,18 @@ pnpm package
 
 ```
 src/
-├── background.ts       # Service Worker: 消息路由, Debugger 管理, 截图, 导航/Cookie管理
-├── content.ts          # Content Script: 元素选取器, CSS 查询, 全文搜索, 页面交互工具
+├── background.ts       # Service Worker: 消息路由, Debugger 管理, 截图, 导航(事件驱动等待)/Cookie管理
+├── content.ts          # Content Script: 元素选取器, CSS 查询, 全文搜索, 页面交互工具, 重复注入防护
 ├── sidepanel.tsx       # 侧边栏 UI (多会话管理, 流式聊天 + 网络请求)
 ├── style.css           # 全局样式 + Tailwind
 ├── types/index.ts      # TypeScript 类型定义
 ├── store/app-store.ts  # Zustand 状态管理 (API Key 加密持久化, 多会话)
 ├── components/         # UI 组件 (MessageBubble, ChatInput, NetworkTab)
 └── utils/
-    ├── agent.ts        # LangChain Agent 集成 (18个工具, 工具调用循环, 上下文截断保护)
+    ├── agent.ts        # LangChain Agent 集成 (18个工具, 工具调用循环, 工具状态实时推送, 上下文截断保护)
     ├── messaging.ts    # 消息传递工具 (含 content script 自动注入)
     ├── crypto.ts       # Web Crypto API AES-GCM 加密
     ├── logger.ts       # 结构化日志 (debug/info/warn/error)
-    ├── streaming.ts    # SSE 流式解析器 (legacy)
     └── tools.ts        # 系统提示构建
 ```
 

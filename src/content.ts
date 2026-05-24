@@ -229,6 +229,10 @@ class ElementPicker {
 
 const picker = new ElementPicker();
 
+// Guard: only register listener once per page, even if re-injected
+if (!document.documentElement.hasAttribute('data-page-analyzer-init')) {
+  document.documentElement.setAttribute('data-page-analyzer-init', 'true');
+
 chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
   const { type, payload } = message;
   debugLog('ContentScript', 'Received message:', type, payload);
@@ -442,15 +446,6 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       sendResponse({ success: true });
       break;
 
-    case MessageType.GET_PAGE_HTML:
-      debugLog('ContentScript', 'Getting page HTML');
-      sendResponse({
-        html: document.documentElement.outerHTML,
-        title: document.title,
-        url: window.location.href,
-      });
-      break;
-
     case MessageType.QUERY_SELECTOR: {
       const { selector, maxResults = 5, includeHtml = false } = payload || {};
       debugLog('ContentScript', 'Query selector:', selector, { maxResults, includeHtml });
@@ -546,3 +541,4 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
 });
 
 infoLog('ContentScript', 'Page Analyzer content script loaded on:', window.location.href);
+}

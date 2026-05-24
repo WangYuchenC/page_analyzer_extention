@@ -1,6 +1,7 @@
 import { ChatOpenAI } from "@langchain/openai";
 import {
   AIMessage,
+  AIMessageChunk,
   HumanMessage,
   SystemMessage,
   ToolMessage,
@@ -495,7 +496,6 @@ export function createChatModel(apiKey: string, baseUrl: string, model: string, 
 
 import type { Runnable } from "@langchain/core/runnables";
 import type { BaseLanguageModelInput } from "@langchain/core/language_models/base";
-import { AIMessageChunk } from "@langchain/core/messages";
 
 export interface AgentConfig {
   model: Runnable<BaseLanguageModelInput, AIMessageChunk>;
@@ -608,9 +608,23 @@ export function toLangChainMessages(messages: ChatMessage[]): BaseMessage[] {
   return result;
 }
 
+export interface ToolCallData {
+  id: string;
+  name: string;
+  args: Record<string, unknown>;
+}
+
+export interface ToolResultData {
+  id: string;
+  name: string;
+  status: "completed" | "error";
+  result?: string;
+  error?: string;
+}
+
 export interface AgentStreamChunk {
-  type: "content" | "tool_call" | "finish";
-  data: string | { id: string; name: string; args: Record<string, unknown> }[];
+  type: "content" | "tool_call" | "tool_result" | "finish";
+  data: string | ToolCallData[] | ToolResultData;
 }
 
 export async function executeToolCall(
@@ -711,7 +725,16 @@ export async function* streamAgentResponse(
         const toolMessages: ToolMessage[] = [];
         for (const toolCall of response.tool_calls) {
           const args = typeof toolCall.args === "string" ? JSON.parse(toolCall.args) : (toolCall.args || {});
-          const rawResult = await executeToolCall(toolCall.name, args, agent.tools);
+          let rawResult: string;
+          let toolStatus: "completed" | "error" = "completed";
+          let toolError: string | undefined;
+          try {
+            rawResult = await executeToolCall(toolCall.name, args, agent.tools);
+          } catch (error) {
+            rawResult = JSON.stringify({ error: (error as Error).message });
+            toolStatus = "error";
+            toolError = (error as Error).message;
+          }
           const truncated = rawResult.length > MAX_TOOL_RESULT_CHARS
             ? rawResult.slice(0, MAX_TOOL_RESULT_CHARS) + `\n... [truncated ${rawResult.length - MAX_TOOL_RESULT_CHARS} chars]`
             : rawResult;
@@ -721,6 +744,15 @@ export async function* streamAgentResponse(
               tool_call_id: toolCall.id!,
             })
           );
+          yield {
+            type: "tool_result",
+            data: {
+              id: toolCall.id || `${Date.now()}-${toolCall.name}`,
+              name: toolCall.name,
+              status: toolStatus,
+              error: toolError,
+            },
+          };
         }
 
         conversationHistory.push(...toolMessages);

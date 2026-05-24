@@ -310,7 +310,7 @@ async function handleGetPageHTML(tabId: number, sendResponse: (response: unknown
 async function handleNavigate(tabId: number, url: string, sendResponse: (response: unknown) => void) {
   try {
     await chrome.tabs.update(tabId, { url });
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await waitForTabLoad(tabId, 15000);
     sendResponse({ success: true, message: `Navigated to: ${url}` });
   } catch (error) {
     sendResponse({ success: false, error: (error as Error).message });
@@ -320,7 +320,7 @@ async function handleNavigate(tabId: number, url: string, sendResponse: (respons
 async function handleGoBack(tabId: number, sendResponse: (response: unknown) => void) {
   try {
     await chrome.tabs.goBack(tabId);
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await waitForTabLoad(tabId, 10000);
     sendResponse({ success: true, message: 'Went back' });
   } catch (error) {
     sendResponse({ success: false, error: (error as Error).message });
@@ -330,11 +330,43 @@ async function handleGoBack(tabId: number, sendResponse: (response: unknown) => 
 async function handleGoForward(tabId: number, sendResponse: (response: unknown) => void) {
   try {
     await chrome.tabs.goForward(tabId);
-    await new Promise(resolve => setTimeout(resolve, 1000));
+    await waitForTabLoad(tabId, 10000);
     sendResponse({ success: true, message: 'Went forward' });
   } catch (error) {
     sendResponse({ success: false, error: (error as Error).message });
   }
+}
+
+function waitForTabLoad(tabId: number, timeoutMs: number): Promise<void> {
+  return new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      cleanup();
+      resolve(); // resolve anyway, don't reject on timeout
+    }, timeoutMs);
+
+    function onUpdated(tabId_: number, changeInfo: chrome.tabs.TabChangeInfo) {
+      if (tabId_ === tabId && changeInfo.status === 'complete') {
+        cleanup();
+        resolve();
+      }
+    }
+
+    function onRemoved(tabId_: number) {
+      if (tabId_ === tabId) {
+        cleanup();
+        reject(new Error('Tab was closed during navigation'));
+      }
+    }
+
+    function cleanup() {
+      clearTimeout(timeout);
+      chrome.tabs.onUpdated.removeListener(onUpdated);
+      chrome.tabs.onRemoved.removeListener(onRemoved);
+    }
+
+    chrome.tabs.onUpdated.addListener(onUpdated);
+    chrome.tabs.onRemoved.addListener(onRemoved);
+  });
 }
 
 async function handleGetCookies(tabId: number, url: string | undefined, sendResponse: (response: unknown) => void) {

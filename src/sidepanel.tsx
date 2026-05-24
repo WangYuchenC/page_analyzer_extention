@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { Loader2, Globe, ChevronDown, Settings, Plus, MessageSquare, Trash2, X } from "lucide-react";
+import { Loader2, Globe, ChevronDown, Settings, Plus, MessageSquare, Trash2 } from "lucide-react";
 import { MessageType } from "~types";
 import type { ElementInfo, ChatMessage, PageSummary, ToolCallInfo, NetworkRequest, NetworkResponse, ChatSession } from "~types";
 import { addMessageListener, sendToContentScript } from "~utils/messaging";
@@ -74,10 +74,8 @@ function SidePanel() {
     updateMessage,
     appendToMessage,
     setMessageStreaming,
-    clearMessages,
     selectedElement,
     setSelectedElement,
-    screenshot,
     setScreenshot,
     pageSummary,
     setPageSummary,
@@ -295,6 +293,8 @@ function SidePanel() {
 
       let currentToolCalls: ToolCallInfo[] = [];
       let hasToolCalls = false;
+      let latestStreamingId = assistantMsgId;
+      const toolCallMsgMap = new Map<string, string>(); // callId → msgId
 
       try {
         infoLog('SidePanel', 'Starting agent stream...');
@@ -308,28 +308,30 @@ function SidePanel() {
           }
 
           if (chunk.type === "tool_call") {
-            const toolCalls = chunk.data as { name: string; args: Record<string, unknown> }[];
+            const toolCalls = chunk.data as { id: string; name: string; args: Record<string, unknown> }[];
             infoLog('SidePanel', 'Received tool calls:', toolCalls.length);
 
             if (!hasToolCalls) {
               hasToolCalls = true;
-              currentToolCalls = toolCalls.map((tc, index) => ({
-                id: `${generateMsgId()}-${tc.name}-${index}`,
+              currentToolCalls = toolCalls.map((tc) => ({
+                id: tc.id,
                 name: tc.name,
                 status: "running" as const,
               }));
+              toolCalls.forEach((tc) => toolCallMsgMap.set(tc.id, assistantMsgId));
               updateMessage(assistantMsgId, {
                 content: "",
                 metadata: { toolCallInfos: currentToolCalls },
                 isStreaming: false,
               });
             } else {
-              const additionalToolCalls = toolCalls.map((tc, index) => ({
-                id: `${generateMsgId()}-${tc.name}-${index}`,
+              const additionalToolCalls = toolCalls.map((tc) => ({
+                id: tc.id,
                 name: tc.name,
                 status: "running" as const,
               }));
               const additionalMsgId = generateMsgId();
+              toolCalls.forEach((tc) => toolCallMsgMap.set(tc.id, additionalMsgId));
               addMessage({
                 id: additionalMsgId,
                 role: "assistant",
@@ -341,9 +343,39 @@ function SidePanel() {
             }
 
             setStatusText("正在分析页面...");
+          } else if (chunk.type === "tool_result") {
+            const result = chunk.data as { id: string; name: string; status: "completed" | "error"; error?: string };
+            debugLog('SidePanel', `Tool result: ${result.name} = ${result.status}`);
+
+            // Update global tracking
+            currentToolCalls = currentToolCalls.map((tc) =>
+              tc.id === result.id
+                ? { ...tc, status: result.status, result: result.status === "completed" ? "完成" : undefined, error: result.error }
+                : tc
+            );
+
+            // Update only the message that owns this tool call
+            const targetMsgId = toolCallMsgMap.get(result.id);
+            if (targetMsgId) {
+              const msgSpecificCalls = currentToolCalls.filter(
+                (tc) => toolCallMsgMap.get(tc.id) === targetMsgId
+              );
+              updateMessage(targetMsgId, {
+                metadata: { toolCallInfos: msgSpecificCalls },
+              });
+            }
+
+            // If navigation completed, reset page context
+            if (result.name === "navigate" && result.status === "completed") {
+              debugLog('SidePanel', 'Navigation detected, will refresh page context');
+              setSelectedElement(null);
+              setSummaryFetched(false);
+              setScreenshot(null);
+            }
           } else if (chunk.type === "content") {
             if (hasToolCalls) {
               const finalMsgId = generateMsgId();
+              latestStreamingId = finalMsgId;
               addMessage({
                 id: finalMsgId,
                 role: "assistant",
@@ -354,7 +386,7 @@ function SidePanel() {
               setStreamingMessageId(finalMsgId);
               hasToolCalls = false;
             } else {
-              appendToMessage(assistantMsgId, chunk.data as string);
+              appendToMessage(latestStreamingId, chunk.data as string);
             }
           }
         }
@@ -363,15 +395,11 @@ function SidePanel() {
       } catch (streamError: any) {
         errorLog('SidePanel', 'Stream error:', streamError);
         if (assistantMsgId) {
-          appendToMessage(assistantMsgId, "\n[流式响应中断: " + (streamError.message || "未知错误") + "]");
+          appendToMessage(latestStreamingId, "\n[流式响应中断: " + (streamError.message || "未知错误") + "]");
         }
       }
 
-      if (streamingMessageId) {
-        setMessageStreaming(streamingMessageId, false);
-      } else {
-        setMessageStreaming(assistantMsgId, false);
-      }
+      setMessageStreaming(latestStreamingId, false);
     } catch (error: any) {
       errorLog('SidePanel', 'Error in handleSendMessage:', error);
       if (error.name === "AbortError") {
