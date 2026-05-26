@@ -5,7 +5,7 @@
 ## 功能
 
 - **AI 智能对话** — LangChain Agent 流式输出，LLM 可主动调用工具分析页面，支持停止/重试
-- **Markdown 渲染** — 完整的 Markdown 格式支持，包括表格、加粗、斜体、链接、标题、列表、代码块等
+- **Markdown 渲染** — 完整的 Markdown 格式支持，包括表格、加粗、斜体、链接、标题、列表、代码块等；助手消息支持一键复制全文
 - **DOM 元素选择器** — 悬停高亮选取页面元素，自动提取 XPath、CSS Selector、属性等
 - **页面截图** — 截取当前页面可视区域，AI 可"看懂"页面布局
 - **页面摘要** — 自动提取页面标题、标题结构、正文预览等信息作为 LLM 上下文
@@ -82,9 +82,10 @@ src/
 ├── components/         # UI 组件 (MessageBubble, ChatInput, NetworkTab)
 └── utils/
     ├── agent.ts        # LangChain Agent (18工具, 工具调用循环+可配置上限默认999, 工具链保留截断, JSON感知截断, reasoning_content流式, 复杂内容转换 msgToApi, 60条对话历史上限)
-    ├── messaging.ts    # 消息传递 (content script 自动注入+300ms初始化, 30秒超时保护)
-    ├── crypto.ts       # Web Crypto API AES-GCM 加密
+    ├── messaging.ts    # 消息传递 (content script 自动注入+CONTENT_SCRIPT_READY握手协议, 30秒超时保护)
+    ├── crypto.ts       # Web Crypto API AES-GCM 加密 (按安装随机 salt)
     ├── logger.ts       # 结构化日志 (debug/info/warn/error)
+    ├── tool-meta.ts    # 工具元数据单一数据源 (18工具的 Schema/描述/参数定义)
     └── tools.ts        # 系统提示构建
 ```
 
@@ -95,14 +96,14 @@ src/
 - 无 `popup.tsx` — 点击图标直接打开 Chrome 侧边栏
 - 使用 LangChain `ChatOpenAI` 流式调用 LLM API，支持自定义 Base URL 和模型；follow-up 请求使用原生 `fetch` + SSE；`invokeModelRaw` 为全部 18 个工具定义了完整 JSON Schema 参数定义（修复之前空 `properties: {}` 导致推理模型无法正确传参的问题）；`msgToApi` 导出并使用 `convertContent` 处理复杂内容类型（`image_url` 等转 OpenAI 格式）
 - LLM 可主动调用 18 种工具进行页面分析和交互，所有工具均已添加参数验证；自动处理 LangChain DynamicTool 的 `{input: "..."}` 参数包裹问题（仅当值以 `{` 或 `[` 开头时才解包，避免误判 `{input: "hello"}` 等合法参数）
-- `execute_script` 通过 `sendMessage` 发送到 background.ts，使用 CDP `Runtime.evaluate` 绕过 CSP；Debugger 生命周期通过 `needsDetach` 标志管理（仅在我们 attach 时才 detach），`finally` 块保证资源释放；`returnByValue: true` 返回 JSON 序列化结果
+- `execute_script` 通过 `sendMessage` 发送到 background.ts，使用 CDP `Runtime.evaluate` 绕过 CSP；`DebuggerManager.evaluateScript()` 复用已有 debugger 会话（网络监控时避免冲突），否则临时 attach/detach 并保证 `finally` 清理；`returnByValue: true` 返回 JSON 序列化结果
 - `input_text` 额外分发 `change` 和 `blur` 事件以兼容 React/Vue 等现代框架和表单验证库；submit 行为改为查找最近 form 元素提交
-- 工具调用错误格式统一：`{success: false, error: ...}` 和 `{error: ...}` 两种格式自动归一化；工具结果截断使用 JSON 感知的 `truncateToolResult`（数组保留前 N 项，对象保留前 K 个 key）
-- 消息传递基于 `chrome.runtime` API，类型安全的枚举派发，错误信息正确解析；所有消息发送均包含 30 秒超时保护（`Promise.race`）防止 content script 无响应时永久挂起
+- 工具调用错误格式统一：`{error: ...}` 标准格式，`normalizeToolResponse` 自动兼容旧版 `{success: false, error: ...}` 格式；工具结果截断使用 JSON 感知的 `truncateToolResult`（数组保留前 N 项，对象保留前 K 个 key）
+- 消息传递基于 `chrome.runtime` API，类型安全的枚举派发，错误信息正确解析；`sendToContentScript` 使用 `CONTENT_SCRIPT_READY` 握手协议替代固定延迟，确保内容脚本注入完成后再发送消息；所有消息发送均包含 30 秒超时保护（`Promise.race`）防止 content script 无响应时永久挂起
 - 三层上下文保护：`toLangChainMessages` 对存储消息做工具链保留截断（单条 5k / 总量 40k / 最多 50 条）；`streamAgentResponse` 循环内对工具结果做 5k 截断（JSON 感知）并跳过空 HumanMessage；conversationHistory 限制 60 条防止无限增长
 - 兼容 DeepSeek 等深度推理模型，`reasoning_content` 在流式 chunk 中实时捕获并作为 `[思考过程]...[/思考过程]` 输出，无需非流式回退
-- 持久化存储包括：API Key (AES-GCM 加密) / Base URL / Model / Temperature / 最大工具调用轮数 / 聊天记录，支持跨会话保留
+- 持久化存储包括：API Key (AES-GCM 加密，使用按安装随机 salt) / Base URL / Model / Temperature / 最大工具调用轮数 / 聊天记录，支持跨会话保留
 - 结构化页面摘要替代原始 HTML 截断，节省 LLM 上下文空间
-- 使用 Vitest + happy-dom 进行测试，Chrome API 通过 mock 模拟；测试覆盖 parseInput、参数校验、消息转换(msgToApi)、工具错误格式、工具链保留截断、Debugger 生命周期、DOM 事件等
+- 使用 Vitest + happy-dom 进行测试，Chrome API 通过 mock 模拟；测试覆盖 parseInput、参数校验、消息转换(msgToApi)、工具错误格式、工具链保留截断、Debugger 生命周期、DOM 事件、加密解密、内容脚本握手协议等
 - Markdown 渲染引擎支持完整格式：表格、加粗、斜体、链接、标题、列表、代码块、分隔线等，使用自定义解析器实现，无外部依赖
 - 流式渲染稳定性：Markdown 解析器使用索引赋值（`arr[idx++]`）而非 `.push()` 避免 Zustand 同步重渲染触发的 minified 代码中数组长度损坏；`setMessageStreaming` 置于 `finally` 块中确保流状态清理不抛未捕获异常

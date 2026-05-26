@@ -9,16 +9,36 @@ interface MessageBubbleProps {
 
 export default function MessageBubble({ msg, onRetry }: MessageBubbleProps) {
   const isUser = msg.role === "user";
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(msg.content);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      // Clipboard API may not be available
+    }
+  };
 
   return (
     <div className={`flex ${isUser ? "justify-end" : "justify-start"}`}>
       <div
-        className={`max-w-[90%] rounded-lg px-4 py-2 text-sm ${
+        className={`max-w-[90%] rounded-lg px-4 py-2 text-sm relative ${
           isUser
             ? "bg-primary-600 text-white"
             : "bg-white border border-gray-200 text-gray-800"
         }`}
       >
+        {!isUser && (
+          <button
+            onClick={handleCopy}
+            className="absolute top-1.5 right-1.5 p-1 rounded text-gray-400 hover:text-gray-600 bg-gray-50 hover:bg-gray-100 opacity-60 hover:opacity-100 transition-opacity"
+            title="复制内容"
+          >
+            {copied ? <Check className="w-3.5 h-3.5 text-green-600" /> : <Copy className="w-3.5 h-3.5" />}
+          </button>
+        )}
         <ToolCallList toolCallInfos={msg.metadata?.toolCallInfos} />
         <MessageContent content={msg.content} isStreaming={msg.isStreaming} />
         {msg.metadata?.screenshot && (
@@ -320,7 +340,7 @@ function MessageContent({
     <div className="whitespace-pre-wrap">
       {parts}
       {isStreaming && (
-        <span className="inline-block w-2 h-4 bg-gray-600 animate-blink ml-0.5" />
+        <span className="inline-block w-2 h-4 bg-gray-600 animate-blink ml-0.5 align-middle" />
       )}
     </div>
   );

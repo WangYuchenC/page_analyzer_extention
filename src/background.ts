@@ -138,6 +138,59 @@ class DebuggerManager {
     return this.attachedTabs.has(tabId);
   }
 
+  async evaluateScript(tabId: number, script: string): Promise<{ success: boolean; result?: unknown; error?: string }> {
+    const wasAlreadyAttached = this.attachedTabs.has(tabId);
+
+    if (!wasAlreadyAttached) {
+      try {
+        await chrome.debugger.attach({ tabId }, '1.3');
+        this.attachedTabs.add(tabId);
+        await chrome.debugger.sendCommand({ tabId }, 'Debugger.enable');
+      } catch (e) {
+        return { success: false, error: (e as Error).message };
+      }
+    }
+
+    try {
+      const result = await chrome.debugger.sendCommand(
+        { tabId },
+        'Runtime.evaluate',
+        {
+          expression: "(async function(){" + script + "})()",
+          awaitPromise: true,
+          returnByValue: true,
+        }
+      ) as {
+        result?: { value?: unknown; objectId?: string; description?: string };
+        exceptionDetails?: { text?: string; exception?: { description?: string } };
+      };
+
+      if (result.exceptionDetails) {
+        return {
+          success: false,
+          error: result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'Script execution error',
+        };
+      } else if (result.result?.value !== undefined) {
+        return { success: true, result: sanitizeForMessaging(result.result.value) };
+      } else if (result.result?.objectId) {
+        return { success: true, result: "[...]" };
+      } else {
+        return { success: true, result: null };
+      }
+    } catch (error) {
+      return { success: false, error: (error as Error).message };
+    } finally {
+      if (!wasAlreadyAttached) {
+        try {
+          await chrome.debugger.detach({ tabId });
+          this.attachedTabs.delete(tabId);
+        } catch {
+          // Ignore detach errors
+        }
+      }
+    }
+  }
+
   getNetworkRequests(tabId?: number): NetworkRequest[] {
     if (tabId) {
       return Array.from(this.networkRequests.get(tabId)?.values() ?? []);
@@ -507,62 +560,6 @@ function sanitizeForMessaging(value: unknown): unknown {
 }
 
 async function handleExecuteScript(tabId: number, script: string, sendResponse: (response: unknown) => void) {
-  // Only attach if not already managed by DebuggerManager (network monitoring).
-  // We MUST NOT use debuggerManager.attach() because that enables Network and
-  // Debugger domains, triggering fetchResponseBody for EVERY resource which
-  // decodes large binary bodies via atob() and forwards via sendMessage,
-  // causing structured clone RangeError.
-  // Instead: minimal attach → Runtime.evaluate → detach. No side effects.
-  const usingOwnSession = !debuggerManager.isAttached(tabId);
-
-  if (usingOwnSession) {
-    try {
-      await chrome.debugger.attach({ tabId }, '1.3');
-    } catch (e) {
-      sendResponse({ success: false, error: (e as Error).message });
-      return;
-    }
-  }
-
-  try {
-    const result = await chrome.debugger.sendCommand(
-      { tabId },
-      'Runtime.evaluate',
-      {
-        expression: `(async function(){${script}})()`,
-        awaitPromise: true,
-        returnByValue: true,
-      }
-    ) as {
-      result?: { value?: unknown; objectId?: string; description?: string };
-      exceptionDetails?: { text?: string; exception?: { description?: string } };
-    };
-
-    if (result.exceptionDetails) {
-      sendResponse({
-        success: false,
-        error: result.exceptionDetails.exception?.description || result.exceptionDetails.text || 'Script execution error',
-      });
-    } else if (result.result?.value !== undefined) {
-      const sanitized = sanitizeForMessaging(result.result.value);
-      sendResponse({ success: true, result: sanitized });
-    } else if (result.result?.objectId) {
-      sendResponse({
-        success: true,
-        result: result.result.description ? `[${result.result.description}]` : '[Non-serializable return value]',
-      });
-    } else {
-      sendResponse({ success: true, result: null });
-    }
-  } catch (error) {
-    sendResponse({ success: false, error: (error as Error).message });
-  } finally {
-    if (usingOwnSession) {
-      try {
-        await chrome.debugger.detach({ tabId });
-      } catch {
-        // Ignore detach errors
-      }
-    }
-  }
+  const result = await debuggerManager.evaluateScript(tabId, script);
+  sendResponse(result);
 }
