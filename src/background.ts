@@ -226,23 +226,32 @@ chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
       break;
 
     case MessageType.NAVIGATE:
-      if (payload?.url && sender.tab?.id) {
-        handleNavigate(sender.tab.id, payload.url, sendResponse);
-        return true;
+      {
+        const targetTabId = payload?.tabId || sender.tab?.id;
+        if (payload?.url && targetTabId) {
+          handleNavigate(targetTabId, payload.url, sendResponse);
+          return true;
+        }
       }
       break;
 
     case MessageType.GO_BACK:
-      if (sender.tab?.id) {
-        handleGoBack(sender.tab.id, sendResponse);
-        return true;
+      {
+        const targetTabId = payload?.tabId || sender.tab?.id;
+        if (targetTabId) {
+          handleGoBack(targetTabId, sendResponse);
+          return true;
+        }
       }
       break;
 
     case MessageType.GO_FORWARD:
-      if (sender.tab?.id) {
-        handleGoForward(sender.tab.id, sendResponse);
-        return true;
+      {
+        const targetTabId = payload?.tabId || sender.tab?.id;
+        if (targetTabId) {
+          handleGoForward(targetTabId, sendResponse);
+          return true;
+        }
       }
       break;
 

@@ -398,7 +398,9 @@ export function createChromeTools(tabId: number) {
         const strValidation = validateString(args, ["url"]);
         if (strValidation) return JSON.stringify({ error: strValidation });
         
-        const result = await sendMessage(MessageType.NAVIGATE, args);
+        // Include tabId so background.ts's handler can identify the target tab
+        // even when the message comes from the side panel (sender.tab is undefined)
+        const result = await sendMessage(MessageType.NAVIGATE, { ...args, tabId });
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:navigate", "Error:", error);
@@ -414,7 +416,7 @@ export function createChromeTools(tabId: number) {
     func: async () => {
       debugLog("Tool:go_back", "Executing");
       try {
-        const result = await sendMessage(MessageType.GO_BACK, {});
+        const result = await sendMessage(MessageType.GO_BACK, { tabId });
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:go_back", "Error:", error);
@@ -430,7 +432,7 @@ export function createChromeTools(tabId: number) {
     func: async () => {
       debugLog("Tool:go_forward", "Executing");
       try {
-        const result = await sendMessage(MessageType.GO_FORWARD, {});
+        const result = await sendMessage(MessageType.GO_FORWARD, { tabId });
         return JSON.stringify(result, null, 2);
       } catch (error) {
         errorLog("Tool:go_forward", "Error:", error);
@@ -889,16 +891,26 @@ export async function* streamAgentResponse(
       infoLog("streamAgentResponse", `Total content length: ${totalChars} chars (~${Math.floor(totalChars / 4)} tokens)`);
       infoLog("streamAgentResponse", "=== End LLM input ===");
 
-      // Check if conversation history has reasoning_content from a previous
-      // DeepSeek response. LangChain's message serializer drops
-      // additional_kwargs.reasoning_content, causing DeepSeek to return 400
-      // on follow-up calls (it requires the field to be echoed back).
-      // When present, use invokeModelRaw which serializes via msgToApi.
-      const hasReasoningContent = conversationHistory.some(
+      // Determine whether we need invokeModelRaw (which uses msgToApi and
+      // properly includes additional_kwargs.reasoning_content) vs LangChain's
+      // streaming model (which drops reasoning_content from its serialization).
+      //
+      // Two cases:
+      //   1. history (previous turns) has reasoning_content — must use
+      //      invokeModelRaw even on iteration 1, since LangChain would drop
+      //      the field and DeepSeek rejects the request with 400.
+      //   2. WE accumulated reasoning_content during THIS streaming session
+      //      (iteration >= 2) — switch to invokeModelRaw for follow-up calls.
+      const historyHasReasoning = history.length > 0 && history.some(
         (m) => (m.additional_kwargs as Record<string, unknown>)?.reasoning_content
       );
+      const sessionHasReasoning = !historyHasReasoning && iteration > 1 &&
+        conversationHistory.slice(history.length).some(
+          (m) => (m.additional_kwargs as Record<string, unknown>)?.reasoning_content
+        );
+      const useRawFetch = historyHasReasoning || sessionHasReasoning;
 
-      if (hasReasoningContent) {
+      if (useRawFetch) {
         // invokeModelRaw already wraps retryOnRateLimit internally
         response = await invokeModelRaw(agent, currentInput, conversationHistory, signal);
         // Yield reasoning_content from DeepSeek thinking mode (if present in follow-up)
