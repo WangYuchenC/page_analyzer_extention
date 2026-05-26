@@ -13,6 +13,65 @@ import { MessageType } from "../types";
 import { sendToContentScript, sendMessage } from "./messaging";
 import type { ChatMessage } from "../types";
 
+/**
+ * Sleep for a given number of milliseconds.
+ */
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
+ * Retry an async function on rate-limit (429) errors with exponential backoff.
+ * AbortError / Cancel errors bypass retry and re-throw immediately.
+ */
+async function retryOnRateLimit<T>(
+  fn: () => Promise<T>,
+  maxRetries = 3,
+  baseDelay = 2000
+): Promise<T> {
+  let lastError: Error | undefined;
+  for (let attempt = 0; attempt <= maxRetries; attempt++) {
+    try {
+      return await fn();
+    } catch (error: any) {
+      lastError = error as Error;
+      // Don't retry on abort
+      if (error?.name === "AbortError" || error?.name === "Cancel") throw error;
+      // Check for rate-limit indicators
+      const status = error?.status ?? error?.statusCode;
+      const message = (error?.message ?? "").toLowerCase();
+      const isRateLimit =
+        status === 429 ||
+        message.includes("429") ||
+        message.includes("rate limit");
+      if (!isRateLimit || attempt >= maxRetries) throw error;
+      // Exponential backoff with jitter
+      const delay = baseDelay * Math.pow(2, attempt) + Math.random() * 1000;
+      warnLog("retryOnRateLimit", `Rate limited (attempt ${attempt + 1}/${maxRetries}), retrying in ${Math.round(delay)}ms`);
+      // Check signal between retries (via fn's closure)
+      await sleep(delay);
+    }
+  }
+  throw lastError ?? new Error("Retry failed");
+}
+
+const REASONING_REGEX = /^\[思考过程\]\n([\s\S]*?)\n\[\/思考过程\]\n?/;
+
+/**
+ * Extract reasoning_content from message content that contains
+ * [思考过程] markers (as yielded by streamAgentResponse), returning
+ * clean content and the separate reasoning text.
+ */
+function extractReasoningContent(content: string): {
+  cleanContent: string;
+  reasoningContent?: string;
+} {
+  const match = content.match(REASONING_REGEX);
+  if (!match) return { cleanContent: content };
+  return {
+    cleanContent: content.slice(match[0].length),
+    reasoningContent: match[1],
+  };
+}
+
 function parseInput(input: string): Record<string, unknown> {
   if (!input) return {};
   try {
@@ -592,18 +651,24 @@ export function toLangChainMessages(messages: ChatMessage[]): BaseMessage[] {
       case "user":
         return new HumanMessage(truncatedContent);
       case "assistant": {
+        // Extract [思考过程] markers into additional_kwargs.reasoning_content
+        // so DeepSeek API receives the field it requires on follow-up calls.
+        const { cleanContent, reasoningContent } = extractReasoningContent(truncatedContent);
+        const additionalKwargs: Record<string, unknown> = {};
+        if (reasoningContent) additionalKwargs.reasoning_content = reasoningContent;
         if (msg.tool_calls?.length) {
           return new AIMessage({
-            content: truncatedContent || "",
+            content: cleanContent || "",
             tool_calls: msg.tool_calls.map((tc) => ({
               id: tc.id,
               type: "tool_call" as const,
               name: tc.function.name,
               args: typeof tc.function.arguments === "string" ? JSON.parse(tc.function.arguments) : tc.function.arguments,
             })),
+            additional_kwargs: additionalKwargs,
           });
         }
-        return new AIMessage(truncatedContent);
+        return new AIMessage({ content: cleanContent, additional_kwargs: additionalKwargs });
       }
       case "tool":
         return new ToolMessage({
@@ -824,28 +889,50 @@ export async function* streamAgentResponse(
       infoLog("streamAgentResponse", `Total content length: ${totalChars} chars (~${Math.floor(totalChars / 4)} tokens)`);
       infoLog("streamAgentResponse", "=== End LLM input ===");
 
-      // Use streaming for real-time token delivery
-      const llmStream = await agent.model.stream(messages, { signal });
-      // Accumulate via concat() which properly merges tool_call_chunks
-      // and additional_kwargs across multiple stream chunks
-      let accumulated = new AIMessageChunk({ content: "" });
+      // Check if conversation history has reasoning_content from a previous
+      // DeepSeek response. LangChain's message serializer drops
+      // additional_kwargs.reasoning_content, causing DeepSeek to return 400
+      // on follow-up calls (it requires the field to be echoed back).
+      // When present, use invokeModelRaw which serializes via msgToApi.
+      const hasReasoningContent = conversationHistory.some(
+        (m) => (m.additional_kwargs as Record<string, unknown>)?.reasoning_content
+      );
 
-      for await (const chunk of llmStream) {
-        if (signal.aborted) break;
-
-        accumulated = accumulated.concat(chunk);
-
-        // Yield reasoning_content from DeepSeek thinking mode during streaming
-        const reasoning = (chunk.additional_kwargs as Record<string, unknown>)?.reasoning_content;
-        if (reasoning) {
-          yield { type: "content", data: `\n[思考过程]\n${reasoning}\n[/思考过程]\n` };
+      if (hasReasoningContent) {
+        // invokeModelRaw already wraps retryOnRateLimit internally
+        response = await invokeModelRaw(agent, currentInput, conversationHistory, signal);
+        // Yield reasoning_content from DeepSeek thinking mode (if present in follow-up)
+        const rc = (response.additional_kwargs as Record<string, unknown>)?.reasoning_content;
+        if (rc) {
+          yield { type: "content", data: `\n[思考过程]\n${rc as string}\n[/思考过程]\n` };
         }
-        if (chunk.content) {
-          yield { type: "content", data: String(chunk.content) };
+        if (response.content) {
+          yield { type: "content", data: String(response.content) };
         }
+      } else {
+        // First iteration (no reasoning_content yet) — use streaming for
+        // real-time token delivery
+        const llmStream = await retryOnRateLimit(() => agent.model.stream(messages, { signal }));
+        // Accumulate via concat() which properly merges tool_call_chunks
+        // and additional_kwargs across multiple stream chunks
+        let accumulated = new AIMessageChunk({ content: "" });
+
+        for await (const chunk of llmStream) {
+          if (signal.aborted) break;
+
+          accumulated = accumulated.concat(chunk);
+
+          // Yield reasoning_content from DeepSeek thinking mode during streaming
+          const reasoning = (chunk.additional_kwargs as Record<string, unknown>)?.reasoning_content;
+          if (reasoning) {
+            yield { type: "content", data: `\n[思考过程]\n${reasoning as string}\n[/思考过程]\n` };
+          }
+          if (chunk.content) {
+            yield { type: "content", data: String(chunk.content) };
+          }
+        }
+        response = accumulated;
       }
-
-      response = accumulated;
 
       if (currentInput.trim()) {
         conversationHistory.push(new HumanMessage(currentInput));
@@ -1065,26 +1152,32 @@ async function invokeModelRaw(
     },
   }));
 
-  const res = await fetch(endpoint, {
-    method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Authorization: `Bearer ${agent.apiKey}`,
-    },
-    body: JSON.stringify({
-      model: agent.modelName,
-      messages: apiMessages,
-      tools,
-      tool_choice: "auto",
-      stream: false,
-    }),
-    signal,
-  });
+  const doFetch = async (): Promise<Response> => {
+    const r = await fetch(endpoint, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${agent.apiKey}`,
+      },
+      body: JSON.stringify({
+        model: agent.modelName,
+        messages: apiMessages,
+        tools,
+        tool_choice: "auto",
+        stream: false,
+      }),
+      signal,
+    });
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      const err: any = new Error(`API error: ${r.status} ${body}`);
+      err.status = r.status;
+      throw err;
+    }
+    return r;
+  };
 
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    throw new Error(`API error: ${res.status} ${body}`);
-  }
+  const res = await retryOnRateLimit(doFetch);
 
   const data = await res.json();
   const choice = data.choices?.[0];
@@ -1192,8 +1285,8 @@ export async function* streamFollowUp(
   infoLog("streamFollowUp", "Sending request to:", endpoint);
 
   let res: Response;
-  try {
-    res = await fetch(endpoint, {
+  const performFetch = async (): Promise<Response> => {
+    const r = await fetch(endpoint, {
       method: "POST",
       headers: {
         "Content-Type": "application/json",
@@ -1202,15 +1295,20 @@ export async function* streamFollowUp(
       body: JSON.stringify({ model, messages: apiMessages, stream: true }),
       signal,
     });
+    if (!r.ok) {
+      const body = await r.text().catch(() => "");
+      const err: any = new Error(`API error: ${r.status} ${body}`);
+      err.status = r.status;
+      throw err;
+    }
+    return r;
+  };
+
+  try {
+    res = await retryOnRateLimit(performFetch);
   } catch (fetchError) {
     errorLog("streamFollowUp", "Fetch failed:", fetchError);
     throw fetchError;
-  }
-
-  if (!res.ok) {
-    const body = await res.text().catch(() => "");
-    errorLog("streamFollowUp", "API error response:", res.status, body);
-    throw new Error(`API error: ${res.status} ${body}`);
   }
 
   if (!res.body) {
