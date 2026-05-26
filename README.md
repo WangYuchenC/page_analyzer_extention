@@ -78,10 +78,10 @@ src/
 ├── sidepanel.tsx       # 侧边栏 UI (多会话管理, 流式聊天 + 网络请求)
 ├── style.css           # 全局样式 + Tailwind
 ├── types/index.ts      # TypeScript 类型定义
-├── store/app-store.ts  # Zustand 状态管理 (API Key 加密持久化, 多会话)
+├── store/app-store.ts  # Zustand 状态管理 (API Key 加密持久化, 多会话, 可配置最大工具调用轮数)
 ├── components/         # UI 组件 (MessageBubble, ChatInput, NetworkTab)
 └── utils/
-    ├── agent.ts        # LangChain Agent (18工具, 工具调用循环+15次上限, 工具链保留截断, JSON感知截断, reasoning_content流式, 复杂内容转换 msgToApi, 60条对话历史上限)
+    ├── agent.ts        # LangChain Agent (18工具, 工具调用循环+可配置上限默认999, 工具链保留截断, JSON感知截断, reasoning_content流式, 复杂内容转换 msgToApi, 60条对话历史上限)
     ├── messaging.ts    # 消息传递 (content script 自动注入+300ms初始化, 30秒超时保护)
     ├── crypto.ts       # Web Crypto API AES-GCM 加密
     ├── logger.ts       # 结构化日志 (debug/info/warn/error)
@@ -101,7 +101,7 @@ src/
 - 消息传递基于 `chrome.runtime` API，类型安全的枚举派发，错误信息正确解析；所有消息发送均包含 30 秒超时保护（`Promise.race`）防止 content script 无响应时永久挂起
 - 三层上下文保护：`toLangChainMessages` 对存储消息做工具链保留截断（单条 5k / 总量 40k / 最多 50 条）；`streamAgentResponse` 循环内对工具结果做 5k 截断（JSON 感知）并跳过空 HumanMessage；conversationHistory 限制 60 条防止无限增长
 - 兼容 DeepSeek 等深度推理模型，`reasoning_content` 在流式 chunk 中实时捕获并作为 `[思考过程]...[/思考过程]` 输出，无需非流式回退
-- 持久化存储包括：API Key (AES-GCM 加密) / Base URL / Model / Temperature / 聊天记录，支持跨会话保留
+- 持久化存储包括：API Key (AES-GCM 加密) / Base URL / Model / Temperature / 最大工具调用轮数 / 聊天记录，支持跨会话保留
 - 结构化页面摘要替代原始 HTML 截断，节省 LLM 上下文空间
 - 使用 Vitest + happy-dom 进行测试，Chrome API 通过 mock 模拟；测试覆盖 parseInput、参数校验、消息转换(msgToApi)、工具错误格式、工具链保留截断、Debugger 生命周期、DOM 事件等
 - Markdown 渲染引擎支持完整格式：表格、加粗、斜体、链接、标题、列表、代码块、分隔线等，使用自定义解析器实现，无外部依赖

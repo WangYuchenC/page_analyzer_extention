@@ -579,6 +579,7 @@ export interface AgentConfig {
   apiKey: string;
   baseUrl: string;
   modelName: string;
+  maxIterations: number;
 }
 
 export function createAgentForTab(
@@ -587,9 +588,10 @@ export function createAgentForTab(
   model: string,
   temperature: number,
   tabId: number,
-  systemPrompt: string
+  systemPrompt: string,
+  maxIterations = 999
 ): AgentConfig {
-  infoLog("createAgentForTab", "Creating agent for tab", { model, baseUrl, tabId });
+  infoLog("createAgentForTab", "Creating agent for tab", { model, baseUrl, tabId, maxIterations });
 
   const chatModel = createChatModel(apiKey, baseUrl, model, temperature);
   const tools = createChromeTools(tabId);
@@ -602,6 +604,7 @@ export function createAgentForTab(
     apiKey,
     baseUrl: baseUrl || "https://api.openai.com/v1",
     modelName: model,
+    maxIterations,
   };
 }
 
@@ -843,9 +846,10 @@ export async function* streamAgentResponse(
 
   const conversationHistory: BaseMessage[] = [...history];
   const MAX_TOOL_RESULT_CHARS = 5000;
-  const MAX_ITERATIONS = 15;
+  const MAX_ITERATIONS = agent.maxIterations;
   let currentInput = input;
   let iteration = 0;
+  let accumulatedReasoning = '';
 
   while (!signal.aborted) {
     iteration++;
@@ -854,7 +858,7 @@ export async function* streamAgentResponse(
       warnLog("streamAgentResponse", `Max iterations (${MAX_ITERATIONS}) reached, stopping tool loop`);
       yield {
         type: "content",
-        data: `\n\n[已达到最大工具调用次数(${MAX_ITERATIONS})，可能遇到了循环问题，请尝试更具体地描述您的问题]`,
+        data: `\n\n[已达到最大工具调用次数(${MAX_ITERATIONS})，请尝试更具体地描述您的问题，或增大最大迭代次数配置]`,
       };
       break;
     }
@@ -934,16 +938,32 @@ export async function* streamAgentResponse(
 
           accumulated = accumulated.concat(chunk);
 
-          // Yield reasoning_content from DeepSeek thinking mode during streaming
+          // Accumulate reasoning_content from DeepSeek thinking mode during streaming.
+          // DeepSeek sends reasoning_content as delta tokens (not full accumulated text),
+          // so each chunk's reasoning_content is appended to build the complete thought.
+          // We batch-yield once at the transition from thinking → response phase to
+          // avoid flooding the UI with one `[思考过程]` wrapper per token.
           const reasoning = (chunk.additional_kwargs as Record<string, unknown>)?.reasoning_content;
           if (reasoning) {
-            yield { type: "content", data: `\n[思考过程]\n${reasoning as string}\n[/思考过程]\n` };
+            accumulatedReasoning += reasoning as string;
           }
-          if (chunk.content) {
+          if (chunk.content && accumulatedReasoning) {
+            // Transition: thinking phase just ended — yield accumulated reasoning once
+            yield { type: "content", data: `\n[思考过程]\n${accumulatedReasoning}\n[/思考过程]\n` };
+            accumulatedReasoning = '';
+            yield { type: "content", data: String(chunk.content) };
+          } else if (chunk.content) {
             yield { type: "content", data: String(chunk.content) };
           }
         }
         response = accumulated;
+
+        // Flush any remaining accumulated reasoning (e.g., when response has
+        // tool_calls and the stream ended without a content transition)
+        if (accumulatedReasoning) {
+          yield { type: "content", data: `\n[思考过程]\n${accumulatedReasoning}\n[/思考过程]\n` };
+          accumulatedReasoning = '';
+        }
       }
 
       if (currentInput.trim()) {
@@ -1271,101 +1291,3 @@ export function msgToApi(msg: BaseMessage): Record<string, unknown> {
   return { role: "user", content: convertContent(msg.content) };
 }
 
-export async function* streamFollowUp(
-  apiKey: string,
-  baseUrl: string,
-  model: string,
-  history: BaseMessage[],
-  assistantMsg: AIMessage,
-  toolMsgs: ToolMessage[],
-  signal: AbortSignal
-): AsyncGenerator<string> {
-  infoLog("streamFollowUp", "Starting follow-up stream", { baseUrl, model, historyLength: history.length, toolMsgsCount: toolMsgs.length });
-
-  const apiMessages: Record<string, unknown>[] = [];
-  for (const m of history) apiMessages.push(msgToApi(m));
-  if (assistantMsg) apiMessages.push(msgToApi(assistantMsg));
-  for (const m of toolMsgs) apiMessages.push(msgToApi(m));
-
-  debugLog("streamFollowUp", "API messages prepared:", apiMessages.length, "messages");
-
-  const normalizedBase = baseUrl.replace(/\/+$/, "");
-  const endpoint = normalizedBase.endsWith("/chat/completions")
-    ? normalizedBase
-    : normalizedBase + "/chat/completions";
-
-  infoLog("streamFollowUp", "Sending request to:", endpoint);
-
-  let res: Response;
-  const performFetch = async (): Promise<Response> => {
-    const r = await fetch(endpoint, {
-      method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Authorization: `Bearer ${apiKey}`,
-      },
-      body: JSON.stringify({ model, messages: apiMessages, stream: true }),
-      signal,
-    });
-    if (!r.ok) {
-      const body = await r.text().catch(() => "");
-      const err: any = new Error(`API error: ${r.status} ${body}`);
-      err.status = r.status;
-      throw err;
-    }
-    return r;
-  };
-
-  try {
-    res = await retryOnRateLimit(performFetch);
-  } catch (fetchError) {
-    errorLog("streamFollowUp", "Fetch failed:", fetchError);
-    throw fetchError;
-  }
-
-  if (!res.body) {
-    errorLog("streamFollowUp", "Response body is empty");
-    throw new Error("Response body is empty");
-  }
-
-  const reader = res.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-
-  while (true) {
-    let readResult: { done: boolean; value?: Uint8Array };
-    try {
-      readResult = await reader.read();
-    } catch (readError) {
-      errorLog("streamFollowUp", "Error reading stream:", readError);
-      throw readError;
-    }
-
-    const { done, value } = readResult;
-    if (done) break;
-
-    buffer += decoder.decode(value, { stream: true });
-    const lines = buffer.split("\n");
-    buffer = lines.pop() || "";
-
-    for (const line of lines) {
-      const trimmed = line.trim();
-      if (!trimmed.startsWith("data: ")) continue;
-      const data = trimmed.slice(6);
-      if (data === "[DONE]") return;
-      try {
-        const parsed = JSON.parse(data);
-        const choice = parsed.choices?.[0];
-        if (!choice?.delta) continue;
-
-        const content = choice.delta.content;
-        const reasoningContent = choice.delta.reasoning_content;
-
-        if (content) yield content;
-        if (reasoningContent) yield reasoningContent;
-      } catch (e) {
-        warnLog("streamFollowUp", "Failed to parse SSE data:", data, e);
-      }
-    }
-  }
-}

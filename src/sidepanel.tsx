@@ -91,6 +91,8 @@ function SidePanel() {
     setModel,
     temperature,
     setTemperature,
+    maxIterations,
+    setMaxIterations,
   } = useAppStore();
 
   const messages = useCurrentSessionMessages();
@@ -284,7 +286,8 @@ function SidePanel() {
         model,
         temperature,
         tab.id,
-        systemContent
+        systemContent,
+        maxIterations
       );
 
       debugLog('SidePanel', 'Agent created');
@@ -510,6 +513,16 @@ function SidePanel() {
             className="w-full px-3 py-2 border border-yellow-300 rounded text-sm"
             onChange={(e) => setTemperature(parseFloat(e.target.value))}
           />
+          <input
+            type="number"
+            placeholder="最大工具调用轮数 (默认 999)"
+            value={maxIterations}
+            min={1}
+            max={9999}
+            step={1}
+            className="w-full px-3 py-2 border border-yellow-300 rounded text-sm"
+            onChange={(e) => setMaxIterations(parseInt(e.target.value) || 999)}
+          />
         </div>
       ) : (
         <div className="bg-gray-50 border-b border-gray-200 px-4 py-2">
@@ -558,6 +571,18 @@ function SidePanel() {
                 onChange={(e) => setTemperature(parseFloat(e.target.value))}
               />
               <span className="text-xs text-gray-600 w-8 text-right">{temperature}</span>
+            </div>
+            <div className="flex items-center gap-2">
+              <label className="text-xs text-gray-600 whitespace-nowrap">最大轮数:</label>
+              <input
+                type="number"
+                min={1}
+                max={9999}
+                step={1}
+                value={maxIterations}
+                className="w-20 px-2 py-1 border border-gray-300 rounded text-sm"
+                onChange={(e) => setMaxIterations(parseInt(e.target.value) || 999)}
+              />
             </div>
           </div>
         </div>

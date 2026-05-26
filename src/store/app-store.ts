@@ -52,6 +52,8 @@ interface AppState {
   setModel: (model: string) => void;
   temperature: number;
   setTemperature: (temp: number) => void;
+  maxIterations: number;
+  setMaxIterations: (iterations: number) => void;
 }
 
 interface PersistedState {
@@ -59,6 +61,7 @@ interface PersistedState {
   baseUrl: string;
   model: string;
   temperature: number;
+  maxIterations: number;
   sessions: ChatSession[];
   currentSessionId: string | null;
 }
@@ -287,6 +290,8 @@ export const useAppStore = create<AppState>()(
       setModel: (model) => set({ model: model }),
       temperature: 0,
       setTemperature: (temp) => set({ temperature: temp }),
+      maxIterations: 999,
+      setMaxIterations: (iterations) => set({ maxIterations: iterations }),
     }),
     {
       name: 'page-analyzer-storage',
@@ -296,6 +301,7 @@ export const useAppStore = create<AppState>()(
         baseUrl: state.baseUrl,
         model: state.model,
         temperature: state.temperature,
+        maxIterations: state.maxIterations,
         sessions: state.sessions,
         currentSessionId: state.currentSessionId,
       }),
