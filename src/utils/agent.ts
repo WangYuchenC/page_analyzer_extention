@@ -1015,13 +1015,23 @@ export async function* streamAgentResponse(
         conversationHistory.push(...toolMessages);
         currentInput = ""; // clear input, next iteration uses history only
 
-        // Prevent unbounded growth: keep only the most recent messages
-        // (tool call chains at the end are naturally preserved by slicing from front)
+        // Prevent unbounded growth: keep only the most recent messages.
+        // Must avoid orphaning ToolMessages by cutting between an
+        // AIMessage(tool_calls) and its ToolMessage responses — the API
+        // rejects such invalid chains with 400 "tool without tool_calls".
         const MAX_CONVERSATION_HISTORY = 60;
         if (conversationHistory.length > MAX_CONVERSATION_HISTORY) {
-          const excess = conversationHistory.length - MAX_CONVERSATION_HISTORY;
-          conversationHistory.splice(0, excess);
-          debugLog("streamAgentResponse", `Trimmed ${excess} messages from conversation history`);
+          let cutPoint = conversationHistory.length - MAX_CONVERSATION_HISTORY;
+          // Slide the cut forward past any orphaned ToolMessages whose parent
+          // AIMessage(tool_calls) was truncated
+          while (
+            cutPoint < conversationHistory.length &&
+            conversationHistory[cutPoint]._getType() === 'tool'
+          ) {
+            cutPoint++;
+          }
+          conversationHistory.splice(0, cutPoint);
+          debugLog("streamAgentResponse", `Trimmed ${cutPoint} messages from conversation history`);
         }
       } else {
         // Content already streamed chunk-by-chunk above
